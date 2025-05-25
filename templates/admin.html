@@ -21,6 +21,17 @@
             transform: translateY(-5px);
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
         }
+        /* Fix for xs breakpoint that isn't included in Tailwind 2.2.19 */
+        @media (max-width: 639px) {
+            .xs\:hidden {
+                display: none;
+            }
+        }
+        @media (min-width: 640px) {
+            .xs\:inline {
+                display: inline;
+            }
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col">
@@ -35,14 +46,22 @@
     </div>
 
     <!-- Header -->
-    <header class="bg-red-400 py-6 shadow-md text-center relative">
-        <div class="container mx-auto px-4 flex flex-col items-center">
-            <!-- Logout button on the left -->
-            <a href="{{ url_for('logout') }}" class="absolute left-4 top-1/2 transform -translate-y-1/2 bg-white text-red-500 px-4 py-2 rounded-lg shadow hover:bg-gray-100 transition font-medium">
-                <i class="fas fa-sign-out-alt mr-1"></i> Logout
-            </a>
-            <img src="{{ url_for('static', filename='images/logo-no-background.png') }}" alt="Logo" class="h-16 transition-transform duration-300 hover:scale-105">
-            <div id="current-time" class="text-white text-xl font-semibold absolute right-4 top-1/2 transform -translate-y-1/2"></div>
+    <header class="bg-red-400 py-6 shadow-md relative">
+        <div class="container mx-auto px-4">
+            <div class="flex items-center justify-between">
+                <!-- Logout button on the left -->
+                <a href="{{ url_for('logout') }}" class="bg-white text-red-500 px-3 sm:px-4 py-2 rounded-lg shadow hover:bg-gray-100 transition font-medium text-sm sm:text-base whitespace-nowrap w-[calc(100%-20px)] sm:w-auto">
+                    <i class="fas fa-sign-out-alt mr-1"></i> <span class="hidden sm:inline">Logout</span>
+                </a>
+
+                <!-- Logo in center -->
+                <div class="absolute left-1/2 transform -translate-x-1/2">
+                    <img src="{{ url_for('static', filename='images/logo-no-background.png') }}" alt="Logo" class="h-16 transition-transform duration-300 hover:scale-105">
+                </div>
+
+                <!-- Current time on the right - completely hidden on mobile -->
+                <div id="current-time" class="text-white text-xl font-semibold hidden md:block"></div>
+            </div>
         </div>
     </header>
 
