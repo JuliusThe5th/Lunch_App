@@ -585,7 +585,6 @@ def admin():
             END as lunch_id
         FROM obed 
         WHERE datum = ? AND (obed_1 = 1 OR obed_2 = 1 OR obed_3 = 1)
-        LIMIT 5
     """, (test_date,))
 
     recent_assignments = []
