@@ -656,7 +656,7 @@ def assign_card():
     # GET request - show the assignment form
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT * FROM students ORDER BY id DESC LIMIT 10")
+    c.execute("SELECT * FROM students ORDER BY name")
     students = c.fetchall()
     conn.close()
     
@@ -846,7 +846,7 @@ def setup_scheduled_tasks():
     # Schedule PDF scraper to run daily at 7:15 AM
     scheduler.add_job(
         scrape_lunch_pdfs,  # Your existing scraper function
-        trigger=CronTrigger(hour=7, minute=10),
+        trigger=CronTrigger(hour=9, minute=49),
         id='daily_scraper',
         replace_existing=True
     )
