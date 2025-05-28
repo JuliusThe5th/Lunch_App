@@ -116,7 +116,7 @@
                         <h3 class="text-xl font-semibold mb-4 text-gray-900">Student Information</h3>
                         <div class="space-y-3">
                             <p class="text-lg"><span class="font-medium text-gray-700">Name:</span> <span id="studentName" class="text-gray-900"></span></p>
-                            <p class="text-lg"><span class="font-medium text-gray-700">Lunch Number:</span> <span id="lunchNumber" class="text-gray-900"></span></p>
+                            <p class="text-lg"><span class="font-medium text-gray-700">Lunch Number:</span> <span id="lunchNumber"></span></p>
                         </div>
                     </div>
                 </div>
@@ -354,7 +354,7 @@
                 `;
 
                 studentName.textContent = data.student_name;
-                lunchNumber.textContent = data.lunch_number ? `Lunch #${data.lunch_number}` : 'No lunch ordered';
+                lunchNumber.innerHTML = data.lunch_number ? `<span class="text-green-600">Lunch #${data.lunch_number}</span>` : 'No lunch ordered';
 
                 studentInfo.classList.remove('hidden');
 

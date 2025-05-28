@@ -620,46 +620,48 @@ def assign_card():
     if 'user' not in session or session['user'].get('email') not in ALLOWED_ADMIN_EMAILS:
         return "<script>window.history.back();</script>", 200
         
+    error = None
+    success = None
+
     if request.method == 'POST':
         student_name = request.form.get('student_name')
         card_uid = request.form.get('card_uid')
         
         if not student_name or not card_uid:
-            return render_template('assign_card.html', error="Please provide both student name and card UID")
-        
-        try:
-            # Hash the card UID
-            hashed_uid = hashlib.sha256(card_uid.encode()).hexdigest()
-            
-            # Check if card is already assigned
-            conn = get_db()
-            c = conn.cursor()
-            c.execute("SELECT * FROM students WHERE card_id = ?", (hashed_uid,))
-            existing = c.fetchone()
-            
-            if existing:
-                conn.close()
-                return render_template('assign_card.html', error="This card is already assigned to a student")
-            
-            # Add new student-card assignment
-            c.execute("INSERT INTO students (name, card_id) VALUES (?, ?)", (student_name, hashed_uid))
-            conn.commit()
-            conn.close()
-            
-            return render_template('assign_card.html', success="Card successfully assigned to student")
-            
-        except Exception as e:
-            print(f"Error assigning card: {str(e)}")
-            return render_template('assign_card.html', error="An error occurred while assigning the card")
-    
-    # GET request - show the assignment form
+            error = "Please provide both student name and card UID"
+        else:
+            try:
+                # Hash the card UID
+                hashed_uid = hashlib.sha256(card_uid.encode()).hexdigest()
+
+                # Check if card is already assigned
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("SELECT * FROM students WHERE card_id = ?", (hashed_uid,))
+                existing = c.fetchone()
+
+                if existing:
+                    conn.close()
+                    error = "This card is already assigned to a student"
+                else:
+                    # Add new student-card assignment
+                    c.execute("INSERT INTO students (name, card_id) VALUES (?, ?)", (student_name, hashed_uid))
+                    conn.commit()
+                    conn.close()
+                    success = "Card successfully assigned to student"
+
+            except Exception as e:
+                print(f"Error assigning card: {str(e)}")
+                error = "An error occurred while assigning the card"
+
+    # Always fetch the current list of students for both GET and POST requests
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT * FROM students ORDER BY name")
     students = c.fetchall()
     conn.close()
     
-    return render_template('assign_card.html', students=students)
+    return render_template('assign_card.html', students=students, error=error, success=success)
 
 @app.route('/gift-lunch', methods=['GET', 'POST'])
 def gift_lunch():
@@ -845,7 +847,7 @@ def setup_scheduled_tasks():
     # Schedule PDF scraper to run daily at 7:15 AM
     scheduler.add_job(
         scrape_lunch_pdfs,  # Your existing scraper function
-        trigger=CronTrigger(hour=9, minute=49),
+        trigger=CronTrigger(hour=8, minute=39),
         id='daily_scraper',
         replace_existing=True
     )
