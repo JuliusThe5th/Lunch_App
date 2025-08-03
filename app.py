@@ -13,6 +13,7 @@ import pytz
 from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
 from datetime import timedelta
+from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
@@ -34,6 +35,10 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
 UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+
+
+CORS(app, resources={r"/*": {"origins": [FRONTEND_URL], "supports_credentials": True}})
 
 # Initialize the database
 db.init_app(app)
@@ -42,32 +47,90 @@ migrate = Migrate(app, db)
 # Set ngrok authtoken
 conf.get_default().auth_token = os.getenv('NGROK_AUTH_TOKEN')
 
-@app.route('/verify-token', methods=['POST'])
+
+@app.route('/api/verify-token', methods=['POST'])
 def verify_token():
-    token = request.json.get('token')
+    user_data = request.json
     try:
-        # Verify Google token
-        idinfo = id_token.verify_oauth2_token(
-            token,
-            requests.Request(),
-            os.getenv('GOOGLE_CLIENT_ID')
-        )
+        # Extract full name from Google response
+        # Make sure we get the complete name
+        full_name = user_data.get('fullName')
+        picture = user_data.get('picture')
 
-        # Create JWT
-        access_token = create_access_token(identity=idinfo['email'])
+        if not full_name:
+            return jsonify({'error': 'Invalid user data - missing name components'}), 400
 
-        response = jsonify({'message': 'Token verified'})
+        # Create JWT token with full name
+        access_token = create_access_token(identity=full_name)
+
+        response = jsonify({
+            'message': 'Authentication successful',
+            'name': full_name,  # Send back constructed full name
+            'picture': picture,
+        })
+
         response.set_cookie(
             'access_token_cookie',
             access_token,
             secure=True,
             httponly=True,
-            samesite='Lax'
+            samesite='None',
+            domain=None,
+            max_age=30 * 24 * 60 * 60
         )
+
         return response
 
-    except ValueError:
-        return jsonify({'error': 'Invalid token'}), 401
+    except Exception as e:
+        print(f"Authentication error: {e}")
+        return jsonify({'error': 'Authentication failed'}), 401
+
+
+@app.route('/api/user-info', methods=['GET'])
+@jwt_required()
+def get_user_info():
+    """
+    Endpoint to get current user information and lunch status
+    Uses Student model and TodayLunch relationship
+    """
+    # Get the full name from JWT token
+    full_name = get_jwt_identity()
+    print(full_name)
+    try:
+        # Split the full name into first name and surname
+        # Assuming the format is "name surname"
+        name_parts = full_name.split(' ', 1)
+        if len(name_parts) != 2:
+            return jsonify({
+                'error': 'Invalid name format'
+            }), 400
+
+        first_name, surname = name_parts
+
+        # Find student by both name and surname
+        student = Student.query.filter_by(name=first_name, surname=surname).first()
+
+        if not student:
+            return jsonify({
+                'error': 'Student not found'
+            }), 404
+
+        # Get today's lunch information
+        today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+        return jsonify({
+            'name': f"{student.name} {student.surname}",
+            'lunch': {
+                'hasLunch': today_lunch is not None,
+                'number': today_lunch.lunch_id if today_lunch else None
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting student info: {e}")
+        return jsonify({
+            'error': 'Failed to retrieve student information'
+        }), 500
 
 def get_current_date_str():
     # Get current date in EU format (DD-MM-YYYY)
@@ -182,20 +245,27 @@ def upload_pdf():
                                 # Match pattern: Surname FirstName 1 0 0 (or similar)
                                 match = re.match(r'([^\d]+)\s+([^\d]+)\s+([01])\s+([01])\s+([01])', line)
                                 if match:
-                                    surname = match.group(1).strip()
-                                    first_name = match.group(2).strip()
+                                    surname = match.group(1).strip()  # First part is surname
+                                    first_name = match.group(2).strip()  # Second part is first name
                                     lunch1, lunch2, lunch3 = match.group(3), match.group(4), match.group(5)
-                                    full_name = f"{surname} {first_name}"
+
+                                    # Look up student by both name and surname
+                                    student = Student.query.filter_by(name=first_name, surname=surname).first()
+                                    if not student:
+                                        # Create new student with separated name and surname
+                                        student = Student(name=first_name, surname=surname)
+                                        db.session.add(student)
+                                        db.session.commit()
 
                                     # Add entries for each lunch that has a '1'
                                     if lunch1 == '1':
-                                        all_data.append({"Name": full_name, "LunchNumber": 1})
+                                        all_data.append({"student_id": student.id, "LunchNumber": 1})
                                         page_entry_count += 1
                                     if lunch2 == '1':
-                                        all_data.append({"Name": full_name, "LunchNumber": 2})
+                                        all_data.append({"student_id": student.id, "LunchNumber": 2})
                                         page_entry_count += 1
                                     if lunch3 == '1':
-                                        all_data.append({"Name": full_name, "LunchNumber": 3})
+                                        all_data.append({"student_id": student.id, "LunchNumber": 3})
                                         page_entry_count += 1
 
                     page_data_counts.append(page_entry_count)
@@ -208,18 +278,20 @@ def upload_pdf():
             # Process the extracted data
             student_count = 0
             for item in all_data:
-                student = Student.query.filter_by(name=item["Name"]).first()
+                # Get the student using the stored student_id from all_data
+                student = Student.query.get(item["student_id"])
                 if not student:
-                    student = Student(name=item["Name"])
-                    db.session.add(student)
-                    db.session.commit()
+                    continue  # Skip if student not found
 
-                # Check if student already has a lunch assigned
+                # Delete any existing lunch entry for this student
                 existing_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
-                if not existing_lunch:
-                    daily_lunch = TodayLunch(student_id=student.id, lunch_id=item["LunchNumber"])
-                    db.session.add(daily_lunch)
-                    student_count += 1
+                if existing_lunch:
+                    db.session.delete(existing_lunch)
+
+                # Create new lunch entry
+                daily_lunch = TodayLunch(student_id=student.id, lunch_id=item["LunchNumber"])
+                db.session.add(daily_lunch)
+                student_count += 1
 
             db.session.commit()
             return jsonify({

@@ -6,6 +6,7 @@ class Student(db.Model):
     __tablename__ = 'students'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
+    surname = db.Column(db.String(100), nullable=False)
     card_id = db.Column(db.String(100), unique=True)
 
 class AvailableLunch(db.Model):
