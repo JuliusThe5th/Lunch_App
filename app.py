@@ -292,7 +292,7 @@ def clear_existing_data():
     print("Existing data cleared from database")
 
 
-@app.route('/lunch', methods=['POST']
+@app.route('/lunch', methods=['POST'])
 def get_lunch_by_card():
     data = request.get_json()
     hashed_card_uid = data.get('card_uid')
