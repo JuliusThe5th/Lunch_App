@@ -86,6 +86,24 @@ def verify_token():
         return jsonify({'error': 'Authentication failed'}), 401
 
 
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """
+    Clear the JWT token cookie to log out the user
+    """
+    response = jsonify({'message': 'Successfully logged out'})
+
+    # Unset the JWT cookie
+    response.delete_cookie(
+        'access_token_cookie',
+        secure=True,
+        httponly=True,
+        samesite='None',
+        domain=None
+    )
+
+    return response, 200
+
 @app.route('/api/user-info', methods=['GET'])
 @jwt_required()
 def get_user_info():
