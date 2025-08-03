@@ -5,3 +5,7 @@ pyngrok~=7.2.4
 Authlib~=1.5.2
 python-dotenv~=1.1.0
 alembic~=1.15.2
+SQLAlchemy~=2.0.40
+pytz~=2025.2
+Flask-JWT-Extended~=4.7.1
+protobuf~=6.30.2

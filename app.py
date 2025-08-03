@@ -1,4 +1,6 @@
 from flask import Flask, request, jsonify, redirect, url_for, session
+from google.oauth2 import id_token
+from google.auth.transport import requests  # Add this import
 from models import db, Student, TodayLunch, AvailableLunch, GivenLunch
 from flask_migrate import Migrate
 from pyngrok import ngrok, conf
@@ -6,7 +8,11 @@ from authlib.integrations.flask_client import OAuth
 import pandas as pd
 import hashlib
 import os
+import datetime
+import pytz
 from dotenv import load_dotenv
+from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
+from datetime import timedelta
 
 # Load environment variables
 load_dotenv()
@@ -14,6 +20,14 @@ load_dotenv()
 app = Flask(__name__)
 
 # Configure the app
+app.config['JWT_SECRET_KEY'] = os.getenv('SECRET_KEY')
+app.config['JWT_TOKEN_LOCATION'] = ['cookies']
+app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_COOKIE_CSRF_PROTECT'] = True
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
+
+jwt = JWTManager(app)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
@@ -25,64 +39,71 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 db.init_app(app)
 migrate = Migrate(app, db)
 
-# Initialize OAuth
-oauth = OAuth(app)
-google = oauth.register(
-    name='google',
-    client_id=os.getenv('GOOGLE_CLIENT_ID'),
-    client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
-    access_token_url='https://oauth2.googleapis.com/token',
-    authorize_url='https://accounts.google.com/o/oauth2/auth',
-    api_base_url='https://openidconnect.googleapis.com/v1/',
-    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-    client_kwargs={
-        'scope': 'openid email profile',
-        'token_endpoint_auth_method': 'client_secret_post'
-    }
-)
-
 # Set ngrok authtoken
 conf.get_default().auth_token = os.getenv('NGROK_AUTH_TOKEN')
 
-# Reusable token validation function
-def validate_token(google):
-    """Validates the Authorization token and returns the logged-in user."""
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return None, jsonify({'error': 'Authorization header missing or invalid'}), 401
-
-    token = auth_header.split(' ')[1]
-
+@app.route('/verify-token', methods=['POST'])
+def verify_token():
+    token = request.json.get('token')
     try:
-        user_info = google.get('userinfo', token={'access_token': token}).json()
-        if 'error' in user_info:
-            return None, jsonify({'error': 'Invalid token'}), 401
+        # Verify Google token
+        idinfo = id_token.verify_oauth2_token(
+            token,
+            requests.Request(),
+            os.getenv('GOOGLE_CLIENT_ID')
+        )
+
+        # Create JWT
+        access_token = create_access_token(identity=idinfo['email'])
+
+        response = jsonify({'message': 'Token verified'})
+        response.set_cookie(
+            'access_token_cookie',
+            access_token,
+            secure=True,
+            httponly=True,
+            samesite='Lax'
+        )
+        return response
+
+    except ValueError:
+        return jsonify({'error': 'Invalid token'}), 401
+
+def get_current_date_str():
+    # Get current date in EU format (DD-MM-YYYY)
+    prague_tz = pytz.timezone('Europe/Prague')
+    current_date = datetime.datetime.now(prague_tz)
+    return current_date.strftime('%d-%m-%Y')
+
+
+def should_clear_database():
+    """Check if we should clear the database (new day started)"""
+    try:
+        prague_tz = pytz.timezone('Europe/Prague')
+        current_date = datetime.datetime.now(prague_tz).date()
+
+        # Get the date of the last lunch entry from GivenLunch
+        last_given_lunch = GivenLunch.query.order_by(GivenLunch.timestamp.desc()).first()
+
+        # If there are no given lunches, check TodayLunch
+        if not last_given_lunch:
+            today_lunch = TodayLunch.query.first()
+            if not today_lunch:
+                # If both tables are empty, only clear if there's no data at all
+                student_count = Student.query.count()
+                return student_count == 0
+            return False
+
+        last_lunch_date = last_given_lunch.timestamp.date()
+        return current_date > last_lunch_date
+
     except Exception as e:
-        return None, jsonify({'error': 'Token validation failed', 'details': str(e)}), 401
+        print(f"Error checking database date: {e}")
+        return False  # Default to not clearing on error
 
-    full_name = user_info.get('name')
-    student = Student.query.filter_by(name=full_name).first()
-    if not student:
-        return None, jsonify({'error': 'Student not found'}), 404
-
-    return student, None, None
-
-def assign_card_uid_by_id(student_id, card_uid):
-    """Assign a hashed card UID to a student by their ID."""
-    hashed_card_uid = hashlib.sha256(card_uid.encode()).hexdigest()
-    student = Student.query.filter_by(id=student_id).first()
-
-    if not student:
-        return {'error': f'Student with ID {student_id} not found'}
-
-    # Assign the hashed UID to the correct field `card_id`
-    student.card_id = hashed_card_uid
-    db.session.commit()
-    return {'message': f'Card UID assigned to student with ID {student_id} successfully'}
-
-# Route to upload Excel file
+# Route to upload PDF file
 @app.route('/upload', methods=['POST'])
-def upload_excel():
+def upload_pdf():
     if 'file' not in request.files:
         return jsonify({'error': 'No file part in the request'}), 400
 
@@ -90,99 +111,196 @@ def upload_excel():
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
 
-    if file and file.filename.endswith('.xlsx'):
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(filepath)
-
+    if file and file.filename.endswith('.pdf'):
         try:
-            # Debugging: Log file save location
-            print(f"Uploaded file saved to: {filepath}")
+            # Create today's date folder
+            current_date = get_current_date_str()
+            today_folder = os.path.join(app.config['UPLOAD_FOLDER'], current_date)
+            os.makedirs(today_folder, exist_ok=True)
 
-            # Create LunchHistory folder if it doesn't exist
-            history_folder = 'LunchHistory'
-            os.makedirs(history_folder, exist_ok=True)
+            # Save file with timestamp to prevent overwriting
+            timestamp = datetime.datetime.now().strftime('%H-%M-%S')
+            filename = f"{timestamp}_{file.filename}"
+            filepath = os.path.join(today_folder, filename)
+            file.save(filepath)
+            print(f"Uploaded PDF saved to: {filepath}")
 
-            # Query the given lunches and join with student data
-            given_lunches = db.session.query(
-                Student.name, GivenLunch.lunch_id, GivenLunch.timestamp
-            ).join(Student, Student.id == GivenLunch.student_id) \
-                .order_by(Student.name).all()
+            # Check if we need to clear the database (new day)
+            should_clear = should_clear_database()
+            if should_clear:
+                print("New day detected - clearing database")
+                # Create LunchHistory folder if it doesn't exist
+                history_folder = os.path.join('LunchHistory', current_date)
+                os.makedirs(history_folder, exist_ok=True)
 
-            print(f"Given lunches data: {given_lunches}")  # Debugging
+                # Export lunch history before clearing data
+                export_lunch_history(history_folder)
 
-            if given_lunches:
-                # Convert the data to a DataFrame with time in 24-hour format
-                data = [
-                    {
-                        'name': name,
-                        'lunch': lunch_id,
-                        'timestamp': timestamp.strftime('%H:%M:%S')  # Time in 24-hour format
-                    }
-                    for name, lunch_id, timestamp in given_lunches
-                ]
-                df = pd.DataFrame(data)
-
-                # Get the date of the first given lunch
-                first_given_lunch = db.session.query(GivenLunch.timestamp).order_by(GivenLunch.timestamp).first()
-                print(f"First given lunch timestamp: {first_given_lunch}")  # Debugging
-
-                if first_given_lunch:
-                    date_str = first_given_lunch.timestamp.strftime('%d-%m-%Y')  # EU format for the file name
-                    file_name = f"lunches {date_str}.xlsx"
-                    file_path = os.path.join(history_folder, file_name)
-
-                    # Save the DataFrame to an Excel file
-                    print(f"Saving file to: {file_path}")  # Debugging
-                    df.to_excel(file_path, index=False)
-                else:
-                    print("No given lunches found to export.")
+                # Clear existing data
+                clear_existing_data()
+                print("Database cleared for new day")
             else:
-                print("No given lunches data available.")
+                print("Same day - keeping existing data")
 
-            # Delete existing data
-            db.session.query(TodayLunch).delete()
-            db.session.commit()
+            # Process the uploaded PDF file
+            import pdfplumber
+            import re
 
-            db.session.query(AvailableLunch).delete()
-            db.session.commit()
+            all_data = []
+            page_data_counts = []
+            header_found = False
 
-            db.session.query(GivenLunch).delete()
-            db.session.commit()
+            with pdfplumber.open(filepath) as pdf:
+                print(f"PDF has {len(pdf.pages)} pages")
 
-            # Process the uploaded file
-            df = pd.read_excel(filepath)
-            for _, row in df.iterrows():
-                student = Student.query.filter_by(name=row['Name']).first()
+                for page_num, page in enumerate(pdf.pages):
+                    print(f"Processing page {page_num + 1}")
+                    page_entry_count = 0
+                    text = page.extract_text()
+
+                    if text:
+                        lines = text.split('\n')
+
+                        if not header_found:
+                            # Find the header line containing O1, O2, O3 on first occurrence
+                            for i, line in enumerate(lines):
+                                if 'O1' in line and 'O2' in line and 'O3' in line:
+                                    header_found = True
+                                    header_line_idx = i
+                                    print(f"Found header line: {line}")
+                                    # Process lines after header on first page
+                                    lines = lines[header_line_idx + 1:]
+                                    break
+
+                        # Process all lines if header was found (on this or previous page)
+                        if header_found:
+                            for line in lines:
+                                line = line.strip()
+                                if not line:
+                                    continue
+
+                                # Match pattern: Surname FirstName 1 0 0 (or similar)
+                                match = re.match(r'([^\d]+)\s+([^\d]+)\s+([01])\s+([01])\s+([01])', line)
+                                if match:
+                                    surname = match.group(1).strip()
+                                    first_name = match.group(2).strip()
+                                    lunch1, lunch2, lunch3 = match.group(3), match.group(4), match.group(5)
+                                    full_name = f"{surname} {first_name}"
+
+                                    # Add entries for each lunch that has a '1'
+                                    if lunch1 == '1':
+                                        all_data.append({"Name": full_name, "LunchNumber": 1})
+                                        page_entry_count += 1
+                                    if lunch2 == '1':
+                                        all_data.append({"Name": full_name, "LunchNumber": 2})
+                                        page_entry_count += 1
+                                    if lunch3 == '1':
+                                        all_data.append({"Name": full_name, "LunchNumber": 3})
+                                        page_entry_count += 1
+
+                    page_data_counts.append(page_entry_count)
+                    print(f"Found {page_entry_count} entries on page {page_num + 1}")
+
+            # Check if we extracted any data
+            if not all_data:
+                return jsonify({'error': 'Could not extract any valid data from the PDF'}), 400
+
+            # Process the extracted data
+            student_count = 0
+            for item in all_data:
+                student = Student.query.filter_by(name=item["Name"]).first()
                 if not student:
-                    student = Student(name=row['Name'])
+                    student = Student(name=item["Name"])
                     db.session.add(student)
                     db.session.commit()
 
-                daily_lunch = TodayLunch(student_id=student.id, lunch_id=row['LunchNumber'])
-                db.session.add(daily_lunch)
+                # Check if student already has a lunch assigned
+                existing_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+                if not existing_lunch:
+                    daily_lunch = TodayLunch(student_id=student.id, lunch_id=item["LunchNumber"])
+                    db.session.add(daily_lunch)
+                    student_count += 1
 
             db.session.commit()
-            return jsonify({'message': 'File processed and database updated successfully'}), 200
+            return jsonify({
+                'message': 'PDF processed and database updated successfully',
+                'new_entries_added': student_count,
+                'total_entries_processed': len(all_data),
+                'pages_processed': len(page_data_counts),
+                'entries_per_page': page_data_counts,
+                'file_saved_as': filename
+            }), 200
+
         except Exception as e:
-            print(f"Error during file processing: {e}")  # Debugging
+            print(f"Error during PDF processing: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({'error': str(e)}), 500
     else:
-        return jsonify({'error': 'Invalid file type. Only .xlsx files are allowed'}), 400
+        return jsonify({'error': 'Invalid file type. Only .pdf files are allowed'}), 400
 
-# Route to get lunch data for a student
-import hashlib
+def export_lunch_history(history_folder):
+    """Export lunch history to an Excel file."""
+    # Query the given lunches and join with student data
+    given_lunches = db.session.query(
+        Student.name, GivenLunch.lunch_id, GivenLunch.timestamp
+    ).join(Student, Student.id == GivenLunch.student_id) \
+        .order_by(Student.name).all()
 
-@app.route('/lunch', methods=['POST'])
+    print(f"Given lunches data: {given_lunches}")  # Debugging
+
+    if given_lunches:
+        # Convert the data to a DataFrame with time in 24-hour format
+        data = [
+            {
+                'name': name,
+                'lunch': lunch_id,
+                'timestamp': timestamp.strftime('%H:%M:%S')  # Time in 24-hour format
+            }
+            for name, lunch_id, timestamp in given_lunches
+        ]
+        df = pd.DataFrame(data)
+
+        # Get the date of the first given lunch
+        first_given_lunch = db.session.query(GivenLunch.timestamp).order_by(GivenLunch.timestamp).first()
+        print(f"First given lunch timestamp: {first_given_lunch}")  # Debugging
+
+        if first_given_lunch:
+            date_str = first_given_lunch.timestamp.strftime('%d-%m-%Y')  # EU format for the file name
+            file_name = f"lunches {date_str}.xlsx"
+            file_path = os.path.join(history_folder, file_name)
+
+            # Save the DataFrame to an Excel file
+            print(f"Saving file to: {file_path}")  # Debugging
+            df.to_excel(file_path, index=False)
+        else:
+            print("No given lunches found to export.")
+    else:
+        print("No given lunches data available.")
+
+
+def clear_existing_data():
+    """Clear existing lunch data from the database."""
+    db.session.query(TodayLunch).delete()
+    db.session.commit()
+
+    db.session.query(AvailableLunch).delete()
+    db.session.commit()
+
+    db.session.query(GivenLunch).delete()
+    db.session.commit()
+    print("Existing data cleared from database")
+
+
+@app.route('/lunch', methods=['POST']
 def get_lunch_by_card():
     data = request.get_json()
-    card_uid = data.get('card_uid')
-    if not card_uid:
+    hashed_card_uid = data.get('card_uid')
+
+    if not hashed_card_uid:
         return jsonify({'error': 'card_uid is required'}), 400
 
-    # Convert card_uid to a string and hash it
-    hashed_card_uid = hashlib.sha256(str(card_uid).encode()).hexdigest()
-
-    # Find the student by the correct field `card_id`
+    # Find student by the hashed card_id
     student = Student.query.filter_by(card_id=hashed_card_uid).first()
     if not student:
         return jsonify({'error': 'Student not found for the provided card UID'}), 404
@@ -208,20 +326,13 @@ def get_lunch_by_card():
 
 @app.route('/lunches', methods=['GET'])
 def get_lunches():
-    student, error_response, status_code = validate_token(google)
-    if error_response:
-        return error_response, status_code
-
     lunches = AvailableLunch.query.all()
     return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
 
 @app.route('/give_lunch', methods=['POST'])
+@jwt_required()
 def give_lunch():
-    student, error_response, status_code = validate_token(google)
-    if error_response:
-        return error_response, status_code
-
-    daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+    daily_lunch = TodayLunch.query.filter_by(student_id=Student.id).first()
     if not daily_lunch:
         return jsonify({'error': 'No lunch found for the user'}), 404
 
@@ -239,11 +350,8 @@ def give_lunch():
     return jsonify({'message': f'Lunch {lunch_id} given successfully'}), 200
 
 @app.route('/request_lunch', methods=['POST'])
+@jwt_required()
 def request_lunch():
-    student, error_response, status_code = validate_token(google)
-    if error_response:
-        return error_response, status_code
-
     data = request.get_json()
     lunch_id = data.get('lunch_id')
     if not lunch_id:
@@ -253,7 +361,7 @@ def request_lunch():
     if not available_lunch or available_lunch.quantity <= 0:
         return jsonify({'error': 'Requested lunch is not available'}), 404
 
-    daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+    daily_lunch = TodayLunch.query.filter_by(student_id=Student.id).first()
     if daily_lunch:
         return jsonify({'error': 'Student already has a lunch assigned'}), 400
 
@@ -261,38 +369,43 @@ def request_lunch():
     if available_lunch.quantity == 0:
         db.session.delete(available_lunch)
 
-    new_daily_lunch = TodayLunch(student_id=student.id, lunch_id=lunch_id)
+    new_daily_lunch = TodayLunch(student_id=Student.id, lunch_id=lunch_id)
     db.session.add(new_daily_lunch)
 
     db.session.commit()
-    return jsonify({'message': f'Lunch {lunch_id} assigned to {student.name} successfully'}), 200
+    return jsonify({'message': f'Lunch {lunch_id} assigned to {Student.name} successfully'}), 200
 
-# Google Sign-In routes
-@app.route('/login', methods=['GET'])
-def login():
-    redirect_uri = url_for('authorize', _external=True)
-    return google.authorize_redirect(redirect_uri)
+@app.route('/assign_card', methods=['POST'])
+def assign_card():
+    data = request.get_json()
+    student_name = data.get('student_name')
+    card_uid = data.get('card_uid')
 
-@app.route('/authorize')
-def authorize():
-    token = google.authorize_access_token()
-    print(f"Access Token: {token}")
-    user_info = google.get('userinfo').json()
-    full_name = user_info.get('name')
+    if not student_name or not card_uid:
+        return jsonify({'error': 'Both student_name and card_uid are required'}), 400
 
-    student = Student.query.filter_by(name=full_name).first()
+    # Find student by name
+    student = Student.query.filter_by(name=student_name).first()
     if not student:
-        student = Student(name=full_name)
-        db.session.add(student)
+        return jsonify({'error': f'Student {student_name} not found'}), 404
+
+    # Check if card_uid is already assigned
+    existing_card = Student.query.filter_by(card_id=card_uid).first()
+    if existing_card:
+        return jsonify({'error': 'This card is already assigned to another student'}), 400
+
+    # Assign card_uid to student
+    try:
+        student.card_id = card_uid
         db.session.commit()
-
-    session['user'] = user_info
-    return jsonify(user_info)
-
-@app.route('/logout')
-def logout():
-    session.pop('user', None)
-    return redirect(url_for('login'))
+        return jsonify({
+            'message': 'Card assigned successfully',
+            'student': student.name,
+            'card_uid': card_uid
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to assign card: {str(e)}'}), 500
 
 # Start ngrok tunnel
 public_url = ngrok.connect(addr="http://127.0.0.1:5000", domain="lamb-kind-preferably.ngrok-free.app")
