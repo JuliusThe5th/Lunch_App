@@ -101,6 +101,42 @@ def verify_token():
         if not full_name:
             return jsonify({'error': 'Invalid user data - missing name components'}), 400
 
+        # Get result from split_name
+        result = split_name(full_name)
+
+        # Check if result is a tuple (error response)
+        if isinstance(result, tuple):
+            response_json, status_code = result
+
+            # If it's a 404 (student not found), create new student
+            if status_code == 404:
+                # Split name into components
+                name_parts = full_name.split(' ', 1)
+                if len(name_parts) != 2:
+                    return jsonify({'error': 'Invalid name format - need both first name and surname'}), 400
+
+                first_name, surname = name_parts
+
+                # Create new student
+                try:
+                    student = Student(
+                        name=first_name,
+                        surname=surname,
+                        pictureURL=picture
+                    )
+                    db.session.add(student)
+                    db.session.commit()
+                    print(f"Created new student: {first_name} {surname}")
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"Failed to create student: {e}")
+                    return jsonify({'error': 'Failed to create new student'}), 500
+            else:
+                # For other errors, return the error response
+                return result
+        else:
+            # If not a tuple, it's a valid Student object
+            student = result
         # Create JWT token with full name
         access_token = create_access_token(identity=full_name)
 
@@ -465,6 +501,7 @@ def get_students():
                 student_data = {
                     'id': student.id,
                     'full_name': f"{student.name} {student.surname}",
+                    'picture': student.pictureURL,
                 }
                 student_list.append(student_data)
 

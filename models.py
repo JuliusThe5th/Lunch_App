@@ -7,12 +7,13 @@ class Student(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     surname = db.Column(db.String(100), nullable=False)
+    pictureURL = db.Column(db.String(200))
     card_id = db.Column(db.String(100), unique=True)
 
 class AvailableLunch(db.Model):
     __tablename__ = 'available_lunches'
     lunch_id = db.Column(db.Integer, primary_key=True)
-    quantity = db.Column(db.Integer, )  # Ensure quantity is not nullable
+    quantity = db.Column(db.Integer )  # Ensure quantity is not nullable
 
 class TodayLunch(db.Model):
     __tablename__ = 'today_lunch'
