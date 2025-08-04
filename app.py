@@ -440,6 +440,9 @@ def clear_existing_data():
 
     db.session.query(GivenLunch).delete()
     db.session.commit()
+
+    db.session.query(AvailableLunch).delete()
+    db.session.commit()
     print("Existing data cleared from database")
 
 
