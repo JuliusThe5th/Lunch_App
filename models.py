@@ -12,7 +12,7 @@ class Student(db.Model):
 class AvailableLunch(db.Model):
     __tablename__ = 'available_lunches'
     lunch_id = db.Column(db.Integer, primary_key=True)
-    quantity = db.Column(db.Integer, nullable=False)  # Ensure quantity is not nullable
+    quantity = db.Column(db.Integer, )  # Ensure quantity is not nullable
 
 class TodayLunch(db.Model):
     __tablename__ = 'today_lunch'

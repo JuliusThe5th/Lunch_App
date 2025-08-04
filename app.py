@@ -22,12 +22,39 @@ app = Flask(__name__)
 
 # Configure the app
 app.config['JWT_SECRET_KEY'] = os.getenv('SECRET_KEY')
-app.config['JWT_TOKEN_LOCATION'] = ['cookies']
-app.config['JWT_COOKIE_SECURE'] = True
-app.config['JWT_COOKIE_CSRF_PROTECT'] = True
+app.config['JWT_TOKEN_LOCATION'] = ['headers', 'cookies']  # Accept tokens from both headers and cookies
+app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token_cookie'
+app.config['JWT_COOKIE_SECURE'] = False  # Set to False for development (localhost)
+app.config['JWT_COOKIE_CSRF_PROTECT'] = False  # Disable CSRF protection for development
+app.config['JWT_COOKIE_SAMESITE'] = 'Lax'  # Change from 'None' to 'Lax' for localhost
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 jwt = JWTManager(app)
+
+# JWT Error handlers for better debugging
+@jwt.expired_token_loader
+def expired_token_callback(jwt_header, jwt_payload):
+    print("JWT ERROR: Token expired")
+    print(f"JWT HEADER: {jwt_header}")
+    print(f"JWT PAYLOAD: {jwt_payload}")
+    return jsonify({"error": "Token has expired"}), 401
+
+@jwt.invalid_token_loader
+def invalid_token_callback(error):
+    print(f"JWT ERROR: Invalid JWT token: {error}")
+    print(f"JWT ERROR TYPE: {type(error)}")
+    return jsonify({"error": "Invalid token"}), 401
+
+@jwt.unauthorized_loader
+def missing_token_callback(error):
+    print(f"JWT ERROR: Missing JWT token: {error}")
+    print(f"JWT ERROR TYPE: {type(error)}")
+    return jsonify({"error": "Authorization token required"}), 401
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    print(f"JWT CHECK: Token blocklist check - Header: {jwt_header}, Payload: {jwt_payload}")
+    return False
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -38,7 +65,13 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 
 
-CORS(app, resources={r"/*": {"origins": [FRONTEND_URL], "supports_credentials": True}})
+CORS(app, resources={r"/*": {
+    "origins": [FRONTEND_URL],  # Be explicit with protocol
+    "supports_credentials": True,
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization"],
+    "expose_headers": ["Authorization"],
+}})
 
 # Initialize the database
 db.init_app(app)
@@ -47,6 +80,14 @@ migrate = Migrate(app, db)
 # Set ngrok authtoken
 conf.get_default().auth_token = os.getenv('NGROK_AUTH_TOKEN')
 
+
+@app.before_request
+def log_request_info():
+    print('\n=== Request Info ===')
+    print(f'Headers: {dict(request.headers)}')
+    print(f'Cookies: {request.cookies}')
+    print(f'Data: {request.get_json(silent=True)}')
+    print('===================\n')
 
 @app.route('/api/verify-token', methods=['POST'])
 def verify_token():
@@ -72,9 +113,9 @@ def verify_token():
         response.set_cookie(
             'access_token_cookie',
             access_token,
-            secure=True,
+            secure=False,  # Set to False for development (localhost)
             httponly=True,
-            samesite='None',
+            samesite='Lax',  # Changed from 'None' to 'Lax' for localhost
             domain=None,
             max_age=30 * 24 * 60 * 60
         )
@@ -96,9 +137,9 @@ def logout():
     # Unset the JWT cookie
     response.delete_cookie(
         'access_token_cookie',
-        secure=True,
+        secure=False,  # Set to False for development (localhost)
         httponly=True,
-        samesite='None',
+        samesite='Lax',  # Changed from 'None' to 'Lax' for localhost
         domain=None
     )
 
@@ -115,23 +156,7 @@ def get_user_info():
     full_name = get_jwt_identity()
     print(full_name)
     try:
-        # Split the full name into first name and surname
-        # Assuming the format is "name surname"
-        name_parts = full_name.split(' ', 1)
-        if len(name_parts) != 2:
-            return jsonify({
-                'error': 'Invalid name format'
-            }), 400
-
-        first_name, surname = name_parts
-
-        # Find student by both name and surname
-        student = Student.query.filter_by(name=first_name, surname=surname).first()
-
-        if not student:
-            return jsonify({
-                'error': 'Student not found'
-            }), 404
+        student = split_name(full_name)
 
         # Get today's lunch information
         today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
@@ -414,56 +439,259 @@ def get_lunch_by_card():
 
     return jsonify({'message': f'Lunch {lunch_id} given to student {student.name} successfully'}), 200
 
-@app.route('/lunches', methods=['GET'])
+@app.route('/api/lunches', methods=['GET'])
 def get_lunches():
     lunches = AvailableLunch.query.all()
     return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
 
-@app.route('/give_lunch', methods=['POST'])
+
+@app.route('/api/students', methods=['GET'])
+@jwt_required()
+def get_students():
+    """
+    Get list of students who don't have lunch assigned
+    JWT protected route
+    """
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            # Check if student has a lunch assigned today
+            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+            # Only include students who DON'T have a lunch
+            if today_lunch is None:
+                student_data = {
+                    'id': student.id,
+                    'full_name': f"{student.name} {student.surname}",
+                }
+                student_list.append(student_data)
+
+        return jsonify({
+            'students': student_list,
+            'count': len(student_list)
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting students: {e}")
+        return jsonify({'error': 'Failed to retrieve students'}), 500
+
+
+@app.route('/api/give_lunch', methods=['POST'])
 @jwt_required()
 def give_lunch():
-    daily_lunch = TodayLunch.query.filter_by(student_id=Student.id).first()
-    if not daily_lunch:
-        return jsonify({'error': 'No lunch found for the user'}), 404
+    # Get full name from JWT
+    full_name = get_jwt_identity()
 
-    lunch_id = daily_lunch.lunch_id
-    db.session.delete(daily_lunch)
+    try:
+        student = split_name(full_name)
 
-    available_lunch = AvailableLunch.query.filter_by(lunch_id=lunch_id).first()
-    if available_lunch:
-        available_lunch.quantity += 1
+        # Find their lunch for today
+        daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+        if not daily_lunch:
+            return jsonify({'error': 'No lunch found for the user'}), 404
+
+        lunch_id = daily_lunch.lunch_id
+
+        # Delete from TodayLunch
+        db.session.delete(daily_lunch)
+
+        # Add to AvailableLunch
+        available_lunch = AvailableLunch.query.filter_by(lunch_id=lunch_id).first()
+        if available_lunch:
+            available_lunch.quantity += 1
+        else:
+            available_lunch = AvailableLunch(lunch_id=lunch_id, quantity=1)
+            db.session.add(available_lunch)
+
+        db.session.commit()
+        return jsonify({
+            'message': f'Lunch {lunch_id} given successfully',
+            'student': f"{student.name} {student.surname}"  # Fixed: use student.name instead of student.first_name
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Failed to give lunch: {str(e)}'}), 500
+
+@app.route('/api/give_lunch_direct', methods=['POST'])
+@jwt_required()
+def give_lunch_direct():
+    """
+    Direct lunch gifting - authenticated user gives their lunch to another student
+    Requires student_id in request body (the recipient student)
+    JWT protected route - authenticated user is the sender
+    """
+    # Get authenticated user's name from JWT token
+    authenticated_user = get_jwt_identity()
+    print(f"Authenticated user: {authenticated_user} is giving their lunch to another student")
+
+    try:
+        # Get the authenticated user's student record
+        sender_student = split_name(authenticated_user)
+        if not isinstance(sender_student, Student):
+            return sender_student  # Return error response from split_name
+
+        # Find the sender's lunch for today
+        sender_lunch = TodayLunch.query.filter_by(student_id=sender_student.id).first()
+        if not sender_lunch:
+            return jsonify({'error': 'You do not have a lunch to give'}), 404
+
+        data = request.get_json()
+        recipient_student_id = data.get('student_id')
+
+        if not recipient_student_id:
+            return jsonify({'error': 'student_id is required'}), 400
+
+        try:
+            recipient_student_id = int(recipient_student_id)
+        except ValueError:
+            return jsonify({'error': 'student_id must be a number'}), 400
+
+        # Find the recipient student by ID
+        recipient_student = Student.query.get(recipient_student_id)
+        if not recipient_student:
+            return jsonify({'error': 'Recipient student not found'}), 404
+
+        # Check if recipient already has a lunch
+        existing_lunch = TodayLunch.query.filter_by(student_id=recipient_student_id).first()
+        if existing_lunch:
+            return jsonify({'error': f'Student {recipient_student.name} {recipient_student.surname} already has a lunch assigned'}), 400
+
+        lunch_id = sender_lunch.lunch_id
+
+        # Transfer the lunch from sender to recipient
+        sender_lunch.student_id = recipient_student_id  # Change ownership
+
+        db.session.commit()
+
+        print(f"User {authenticated_user} successfully transferred lunch {lunch_id} to student {recipient_student.name} {recipient_student.surname}")
+
+        return jsonify({
+            'message': f'Lunch {lunch_id} successfully transferred',
+            'sender': {
+                'name': sender_student.name,
+                'surname': sender_student.surname,
+                'full_name': f"{sender_student.name} {sender_student.surname}"
+            },
+            'recipient': {
+                'id': recipient_student.id,
+                'name': recipient_student.name,
+                'surname': recipient_student.surname,
+                'full_name': f"{recipient_student.name} {recipient_student.surname}"
+            },
+            'lunch_id': lunch_id
+        }), 200
+
+    except Exception as e:
+        print(f"Error in direct lunch transfer by {authenticated_user}: {e}")
+        db.session.rollback()
+        return jsonify({'error': f'Failed to transfer lunch: {str(e)}'}), 500
+
+def split_name(full_name):
+    # Debug logging
+    print(f"DEBUG: Full name received: '{full_name}'")
+    print(f"DEBUG: Full name type: {type(full_name)}")
+    print(f"DEBUG: Full name repr: {repr(full_name)}")
+
+    # Split into first name and surname
+    name_parts = full_name.split(' ', 1)
+    print(f"DEBUG: Name parts: {name_parts}")
+
+    if len(name_parts) != 2:
+        print(f"DEBUG: Invalid name format - expected 2 parts, got {len(name_parts)}")
+        return jsonify({'error': 'Invalid name format'}), 400
+
+    first_name, surname = name_parts
+    print(f"DEBUG: First name: '{first_name}', Surname: '{surname}'")
+
+    # Find student by name and surname
+    student = Student.query.filter_by(name=first_name, surname=surname).first()
+    print(f"DEBUG: Student found: {student}")
+
+    if not student:
+        print(f"DEBUG: No student found with name='{first_name}' and surname='{surname}'")
+        # Let's also check what students exist
+        all_students = Student.query.all()
+        print(f"DEBUG: All students in database:")
+        for s in all_students:
+            print(f"  - ID: {s.id}, Name: '{s.name}', Surname: '{s.surname}'")
+        return jsonify({'error': 'Student not found'}), 404
     else:
-        available_lunch = AvailableLunch(lunch_id=lunch_id, quantity=1)
-        db.session.add(available_lunch)
+        print(f"DEBUG: Found student: {student.name} {student.surname}")
+        return student
 
-    db.session.commit()
-    return jsonify({'message': f'Lunch {lunch_id} given successfully'}), 200
 
-@app.route('/request_lunch', methods=['POST'])
+@app.route('/api/request_lunch', methods=['POST'])
 @jwt_required()
 def request_lunch():
+    full_name = get_jwt_identity()
+    print(f"JWT SUCCESS: Full name: {full_name}")
+
+    # Get the student object
+    student = split_name(full_name)
+    if not isinstance(student, Student):  # Handle error responses from split_name
+        print(f"ERROR: split_name returned non-Student object: {student}")
+        return student
+
+    print(f"SUCCESS: Found student: {student.name} {student.surname} (ID: {student.id})")
+
     data = request.get_json()
-    lunch_id = data.get('lunch_id')
+    print(f"Request data: {data}")
+
+    lunch_id = data.get('lunch_id')  # Match the frontend key name
+    print(f"Extracted lunch_id: {lunch_id}")
+
     if not lunch_id:
+        print("ERROR: lunch_id is missing from request")
         return jsonify({'error': 'lunch_id is required'}), 400
 
+    try:
+        lunch_id = int(lunch_id)  # Convert string to integer
+        print(f"Converted lunch_id to int: {lunch_id}")
+    except ValueError:
+        print(f"ERROR: lunch_id conversion failed for value: {lunch_id}")
+        return jsonify({'error': 'lunch_id must be a number'}), 400
+
+    print(f"Looking for available lunch with ID: {lunch_id}")
     available_lunch = AvailableLunch.query.filter_by(lunch_id=lunch_id).with_for_update().first()
-    if not available_lunch or available_lunch.quantity <= 0:
+    print(f"Available lunch found: {available_lunch}")
+
+    if not available_lunch:
+        print("ERROR: No available lunch found")
+        # Let's see what lunches are available
+        all_lunches = AvailableLunch.query.all()
+        print(f"All available lunches: {[(l.lunch_id, l.quantity) for l in all_lunches]}")
         return jsonify({'error': 'Requested lunch is not available'}), 404
 
-    daily_lunch = TodayLunch.query.filter_by(student_id=Student.id).first()
+    if available_lunch.quantity <= 0:
+        print(f"ERROR: Available lunch quantity is {available_lunch.quantity}")
+        return jsonify({'error': 'Requested lunch is not available'}), 404
+
+    print(f"Checking if student {student.id} already has a lunch...")
+    daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+    print(f"Existing daily lunch: {daily_lunch}")
+
     if daily_lunch:
+        print(f"ERROR: Student already has lunch {daily_lunch.lunch_id}")
         return jsonify({'error': 'Student already has a lunch assigned'}), 400
 
+    print(f"Processing lunch assignment: reducing quantity from {available_lunch.quantity} to {available_lunch.quantity - 1}")
     available_lunch.quantity -= 1
-    if available_lunch.quantity == 0:
-        db.session.delete(available_lunch)
 
-    new_daily_lunch = TodayLunch(student_id=Student.id, lunch_id=lunch_id)
+    new_daily_lunch = TodayLunch(student_id=student.id, lunch_id=lunch_id)
     db.session.add(new_daily_lunch)
+    print(f"Added new daily lunch: {new_daily_lunch}")
 
-    db.session.commit()
-    return jsonify({'message': f'Lunch {lunch_id} assigned to {Student.name} successfully'}), 200
+    try:
+        db.session.commit()
+        print("Database commit successful")
+        return jsonify({'message': f'Lunch {lunch_id} assigned to {student.name} successfully'}), 200
+    except Exception as e:
+        print(f"Database commit failed: {e}")
+        db.session.rollback()
+        return jsonify({'error': 'Database error occurred'}), 500
 
 @app.route('/assign_card', methods=['POST'])
 def assign_card():
@@ -497,7 +725,7 @@ def assign_card():
         db.session.rollback()
         return jsonify({'error': f'Failed to assign card: {str(e)}'}), 500
 
-# Start ngrok tunnel
+# Start ngrok tunnel - commented out for testing
 public_url = ngrok.connect(addr="http://127.0.0.1:5000", domain="lamb-kind-preferably.ngrok-free.app")
 print(f" * ngrok tunnel \"{public_url}\" -> \"http://127.0.0.1:5000\"")
 
