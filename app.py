@@ -765,12 +765,25 @@ def assign_card():
         db.session.rollback()
         return jsonify({'error': f'Failed to assign card: {str(e)}'}), 500
 
-# Start ngrok tunnel - commented out for testing
-public_url = ngrok.connect(addr="http://127.0.0.1:5000", domain="lamb-kind-preferably.ngrok-free.app")
-print(f" * ngrok tunnel \"{public_url}\" -> \"http://127.0.0.1:5000\"")
-
 if __name__ == '__main__':
+    # Ensure DB tables exist for dev (prevents "no such table" errors)
     with app.app_context():
-        pass
+        try:
+            db.create_all()
+            print("Database tables ensured.")
+        except Exception as e:
+            print(f"db.create_all failed: {e}")
+
+    # Start ngrok only when explicitly enabled (prevents Flask CLI import crashes)
+    if os.getenv('ENABLE_NGROK') == '1':
+        try:
+            public_url = ngrok.connect(
+                addr="http://127.0.0.1:5000",
+                domain="lamb-kind-preferably.ngrok-free.app"
+            )
+            print(f' * ngrok tunnel "{public_url}" -> "http://127.0.0.1:5000"')
+        except Exception as e:
+            print(f"Ngrok start skipped/failed: {e}")
 
     app.run(debug=True, use_reloader=False)
+
