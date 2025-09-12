@@ -1,26 +1,55 @@
-# Lunch Management System
+# Luncheroo - Lunch Management System
 
-This project is a Flask-based web application designed to manage student lunches. It allows administrators to upload lunch data, assign lunches to students, and track lunch history. The application integrates with Google OAuth for authentication and uses SQLAlchemy for database management.
+This project is a Flask-based web application designed to manage student lunches. It allows students to authenticate via Google, request lunches, and administrators to upload lunch data through PDF files. The system includes features for tracking lunch history and facilitating lunch transfers between students.
 
 ## Features
 
-- **Student Management**: Manage student data, including assigning unique card IDs.
-- **Lunch Assignment**: Assign lunches to students and track their distribution.
-- **PDF Upload**: Upload `.pdf` files to update lunch data.
-- **Lunch History**: Export lunch history to an Excel file with timestamps.
-- **Google OAuth Integration**: Authenticate users using Google Sign-In.
-- **Real-Time Updates**: Use ngrok to expose the application for testing.
+- **Student Authentication**: Sign in with Google OAuth
+- **Lunch Management**:
+  - View assigned lunches
+  - Request available lunches
+  - Transfer lunches to other students
+  - Return lunch to the available pool
+- **Administrative Features**:
+  - Upload PDF files with lunch assignments
+  - Track lunch history
+  - Export lunch history to Excel
+- **Student Management**:
+  - Automatic student creation on first login
+  - Associate students with card IDs for physical lunch distribution
+- **History Tracking**:
+  - Automatically exports lunch data to Excel files
+  - Maintains a record of given lunches
+
+## Architecture
+
+The application is split into:
+
+- **Backend**: Flask-based REST API with JWT authentication
+- **Frontend**: Vue.js single-page application
+- **Database**: SQLite with SQLAlchemy ORM
 
 ## Technologies Used
 
-- **Backend**: Flask, Flask-SQLAlchemy, Flask-Migrate
-- **Authentication**: Google OAuth (via Google ID token)
-- **Database**: SQLite
-- **File Handling**: Pandas for Excel file processing, pdfplumber for PDF parsing
-- **Environment Management**: Python-dotenv
-- **Tunneling**: Pyngrok
+- **Backend**:
+  - Flask: Web framework
+  - Flask-SQLAlchemy: ORM for database interaction
+  - Flask-Migrate: Database migrations
+  - Flask-JWT-Extended: JWT authentication
+  - pdfplumber: PDF parsing
+  - pandas: Data processing and Excel file generation
+- **Frontend**:
+  - Vue.js: Progressive JavaScript framework
+  - Vue Router: Client-side routing
+  - Pinia: State management
+  - Vue3-Google-Login: Google authentication integration
+- **Infrastructure**:
+  - SQLite: Database
+  - pyngrok: Tunneling for local development testing
 
 ## Installation
+
+### Backend Setup
 
 1. Clone the repository:
    ```bash
@@ -30,8 +59,8 @@ This project is a Flask-based web application designed to manage student lunches
 
 2. Create a virtual environment and activate it:
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 3. Install dependencies:
@@ -39,139 +68,135 @@ This project is a Flask-based web application designed to manage student lunches
    pip install -r requirements.txt
    ```
 
-4. Set up environment variables:
-   - Create a `.env` file in the project root.
-   - Add the following variables:
-     ```
-     SQLALCHEMY_DATABASE_URI=sqlite:///lunch_app.db
-     SECRET_KEY=<your-secret-key>
-     GOOGLE_CLIENT_ID=<your-google-client-id>
-     NGROK_AUTH_TOKEN=<your-ngrok-auth-token>
-     UPLOAD_FOLDER=uploads
-     FRONTEND_URL=http://localhost:5173
-     ```
+4. Set up environment variables by creating a `.env` file:
+   ```
+   SQLALCHEMY_DATABASE_URI=sqlite:///lunch_app.db
+   SECRET_KEY=your-secret-key
+   GOOGLE_CLIENT_ID=your-google-client-id
+   NGROK_AUTH_TOKEN=your-ngrok-auth-token
+   UPLOAD_FOLDER=uploads
+   FRONTEND_URL=http://localhost:5173
+   ```
 
 5. Initialize the database:
    ```bash
    flask db upgrade
    ```
 
-6. Start the application:
+6. Run the backend:
    ```bash
-   python app.py
+   flask run
    ```
 
-7. Access the application:
-   - Local: `http://127.0.0.1:5000`
-   - Ngrok: The public URL displayed in the terminal.
+### Frontend Setup
+
+1. Navigate to the frontend directory:
+   ```bash
+   cd frontend
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Create a `.env` file with your Google Client ID:
+   ```
+   VITE_GOOGLE_CLIENT_ID=your-google-client-id
+   VITE_API_BASE_URL=http://localhost:5000
+   ```
+
+4. Run the development server:
+   ```bash
+   npm run dev
+   ```
 
 ## API Endpoints
 
-### 1. `/api/verify-token` (POST)
-- **Description**: Authenticate user via Google OAuth token (ID token from Google Sign-In).
-- **Request**:
-  - Content-Type: `application/json`
-  - Body:
-    ```json
-    {
-      "fullName": "<full_name>",
-      "picture": "<profile_picture_url>"
-    }
-    ```
-- **Response**:
-  - `200 OK`: Returns user info and JWT token (in cookie).
-  - `400 Bad Request`: Invalid user data.
+### Authentication
 
-### 2. `/api/user-info` (GET)
-- **Description**: Get authenticated user's info and lunch order.
-- **Authentication**: Requires JWT token (sent in cookie).
-- **Response**:
-  - `200 OK`: JSON object with user info and lunch order (or null if none).
-  - `401 Unauthorized`: Invalid or missing token.
+#### `/api/verify-token` (POST)
+- Authenticates user via Google Sign-In data
+- Request body: `{ fullName: string, picture: string }`
+- Response: Sets JWT cookie and returns user info
 
-### 3. `/upload` (POST)
-- **Description**: Upload a PDF file containing lunch data for students.
-- **Request**:
-  - Multipart form-data with a `.pdf` file.
-- **Response**:
-  - `200 OK`: PDF processed and database updated.
-  - `400/500`: Error details.
+#### `/api/logout` (POST)
+- Clears the JWT cookie to log out the user
+- Response: Success message
 
-### 4. `/lunches` (GET)
-- **Description**: Retrieve all available lunches and their quantities.
-- **Response**:
-  - `200 OK`: JSON object with lunch IDs and quantities.
+#### `/api/user-info` (GET)
+- Returns the authenticated user's information and lunch status
+- Requires JWT authentication
+- Response: User name and lunch details
 
-### 5. `/give_lunch` (POST)
-- **Description**: Mark a lunch as given to the authenticated student.
-- **Authentication**: Requires JWT token.
-- **Response**:
-  - `200 OK`: Lunch given successfully.
-  - `404 Not Found`: No lunch found for the user.
+### Lunch Management
 
-### 6. `/request_lunch` (POST)
-- **Description**: Request a specific lunch for the authenticated student.
-- **Authentication**: Requires JWT token.
-- **Request**:
-  - Content-Type: `application/json`
-  - Body:
-    ```json
-    {
-      "lunch_id": "<lunch_id>"
-    }
-    ```
-- **Response**:
-  - `200 OK`: Lunch assigned successfully.
-  - `400 Bad Request`: Missing `lunch_id` or student already has a lunch.
-  - `404 Not Found`: Requested lunch is not available.
+#### `/api/lunches` (GET)
+- Returns all available lunches and their quantities
+- Response: Object with lunch IDs as keys and quantities as values
 
-### 7. `/lunch` (POST)
-- **Description**: Mark lunch as given by card UID (for hardware integration).
-- **Request**:
-  - Content-Type: `application/json`
-  - Body:
-    ```json
-    {
-      "card_uid": "<hashed_card_uid>"
-    }
-    ```
-- **Response**:
-  - `200 OK`: Lunch given to student.
-  - `404 Not Found`: Student or lunch not found.
+#### `/api/request_lunch` (POST)
+- Requests a specific lunch for the authenticated student
+- Requires JWT authentication
+- Request body: `{ lunch_id: string }`
+- Response: Success message or error
 
-### 8. `/assign_card` (POST)
-- **Description**: Assign a card UID to a student.
-- **Request**:
-  - Content-Type: `application/json`
-  - Body:
-    ```json
-    {
-      "student_name": "<student_name>",
-      "card_uid": "<card_uid>"
-    }
-    ```
-- **Response**:
-  - `200 OK`: Card assigned successfully.
-  - `404 Not Found`: Student not found.
-  - `400 Bad Request`: Card already assigned.
+#### `/api/give_lunch` (POST)
+- Returns the authenticated student's lunch to the available pool
+- Requires JWT authentication
+- Response: Success message or error
+
+#### `/api/give_lunch_direct` (POST)
+- Transfers lunch from authenticated student to another student
+- Requires JWT authentication
+- Request body: `{ student_id: string }`
+- Response: Success message with details of transfer
+
+### Student Management
+
+#### `/api/students` (GET)
+- Returns list of students who don't have lunch assigned
+- Requires JWT authentication
+- Response: Array of student objects with IDs, names, and pictures
+
+### Administrative Endpoints
+
+#### `/upload` (POST)
+- Uploads a PDF file containing lunch data
+- Request: Multipart form with PDF file
+- Response: Details of processed data
+
+#### `/lunch` (POST)
+- Marks lunch as given using card UID (for hardware integration)
+- Request body: `{ card_uid: string }`
+- Response: Success message or error
 
 ## Database Models
 
-See `models.py` for details on:
-- `Student`
-- `TodayLunch`
-- `AvailableLunch`
-- `GivenLunch`
+### Student
+- Properties: id, name, surname, pictureURL, card_id
 
-## Notes
-- The backend expects Google authentication to be handled on the frontend, which sends the user's full name and profile picture to `/api/verify-token`.
-- JWT tokens are set in cookies for secure authentication.
-- PDF upload parses student lunch assignments and updates the database.
-- Lunch history is exported to Excel before daily data is cleared.
+### AvailableLunch
+- Properties: lunch_id, quantity
 
-## Development
-- For frontend integration, set `FRONTEND_URL` in `.env` to match your frontend dev server.
-- Use ngrok for public testing if needed.
+### TodayLunch
+- Properties: id, student_id, lunch_id
+- Relationships: student, lunch
 
-## License
-MIT
+### GivenLunch
+- Properties: id, student_id, lunch_id, timestamp
+- Relationships: student, lunch
+
+## Development Workflow
+
+1. Students authenticate with Google
+2. Students can view their assigned lunch or request an available one
+3. Students can transfer lunches to others who don't have one
+4. Administrators upload PDF files to update lunch assignments
+5. The system automatically tracks lunch history and exports it to Excel files
+
+## Troubleshooting
+
+- JWT authentication issues: Check cookie settings and CORS configuration
+- Database migration errors: Check constraint names in migration files
+- PDF parsing issues: Verify the PDF format matches the expected structure

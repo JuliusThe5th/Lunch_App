@@ -13,3 +13,4 @@ flask-cors~=6.0.1
 pdfplumber~=0.10.3
 google-auth~=2.29.0
 google-auth-oauthlib~=1.2.0
+psycopg2-binary==2.9.9
