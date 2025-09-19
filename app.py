@@ -441,7 +441,7 @@ def clear_existing_data():
     db.session.query(GivenLunch).delete()
     db.session.commit()
 
-    db.session.query(AvailableLunch).delete()
+    db.session.query(AvailableLunch).update({AvailableLunch.quantity: 0})
     db.session.commit()
     print("Existing data cleared from database")
 
@@ -786,4 +786,3 @@ if __name__ == '__main__':
             print(f"Ngrok start skipped/failed: {e}")
 
     app.run(debug=True, use_reloader=False)
-
