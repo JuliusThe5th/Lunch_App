@@ -481,6 +481,7 @@ def get_lunch_by_card():
 @app.route('/api/lunches', methods=['GET'])
 def get_lunches():
     lunches = AvailableLunch.query.all()
+    print({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches})
     return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
 
 
@@ -517,6 +518,57 @@ def get_students():
         print(f"Error getting students: {e}")
         return jsonify({'error': 'Failed to retrieve students'}), 500
 
+@app.route('/api/getAll', methods=['GET'])
+@jwt_required()
+def get_all_students():
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            student_data = {
+                'full_name': f"{student.name} {student.surname}",
+                'picture': student.pictureURL,
+                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first() is not None
+            }
+            student_list.append(student_data)
+
+            print(student_list)
+
+        return jsonify({
+            'users': student_list,
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting all students: {e}")
+        return jsonify({'error': 'Failed to retrieve students'}), 500
+
+@app.route('/api/recentLunches', methods=['GET'])
+@jwt_required()
+def get_recent_lunches():
+    try:
+        recent_lunches = db.session.query(
+            GivenLunch, Student
+        ).join(Student, GivenLunch.student_id == Student.id) \
+            .order_by(GivenLunch.timestamp.desc()) \
+            .limit(10).all()
+
+        lunch_list = []
+        for given_lunch, student in recent_lunches:
+            lunch_data = {
+                'student_name': f"{student.name} {student.surname}",
+                'lunch_id': given_lunch.lunch_id,
+                'timestamp': given_lunch.timestamp.strftime('%H:%M:%S')
+            }
+            lunch_list.append(lunch_data)
+
+        return jsonify({
+            'recent_lunches': lunch_list
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting recent lunches: {e}")
+        return jsonify({'error': 'Failed to retrieve recent lunches'}), 500
 
 @app.route('/api/give_lunch', methods=['POST'])
 @jwt_required()
