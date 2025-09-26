@@ -688,7 +688,7 @@ def get_all_students():
         print(f"Error getting all students: {e}")
         return jsonify({'error': 'Failed to retrieve students'}), 500
 
-reordered@app.route('/api/recentLunches', methods=['GET'])
+@app.route('/api/recentLunches', methods=['GET'])
 @jwt_required()
 def get_recent_lunches():
     try:
