@@ -1,3 +1,4 @@
+import app
 from flask import Flask, request, jsonify, redirect, url_for, session
 from models import db, Student, TodayLunch, AvailableLunch, GivenLunch
 from flask_migrate import Migrate
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
 from datetime import timedelta
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 
 # Load environment variables
 load_dotenv()
@@ -77,6 +79,23 @@ migrate = Migrate(app, db)
 # Set ngrok authtoken
 conf.get_default().auth_token = os.getenv('NGROK_AUTH_TOKEN')
 
+# Inicializace SocketIO
+socketio = SocketIO(app, cors_allowed_origins=os.getenv(FRONTEND_URL),
+                   async_mode='threading',
+                   logger=True,
+                   engineio_logger=True)
+
+@socketio.on('connect')
+@jwt_required()
+def handle_connect():
+    user_id = get_jwt_identity()
+    join_room('lunch_updates')
+    emit('connected', {'message': 'Connected to lunch updates'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    leave_room('lunch_updates')
+
 
 @app.before_request
 def log_request_info():
@@ -85,6 +104,10 @@ def log_request_info():
     print(f'Cookies: {request.cookies}')
     print(f'Data: {request.get_json(silent=True)}')
     print('===================\n')
+
+# =========================
+# POST ROUTES
+# =========================
 
 @app.route('/api/verify-token', methods=['POST'])
 def verify_token():
@@ -159,7 +182,6 @@ def verify_token():
         print(f"Authentication error: {e}")
         return jsonify({'error': 'Authentication failed'}), 401
 
-
 @app.route('/api/logout', methods=['POST'])
 def logout():
     """
@@ -177,68 +199,6 @@ def logout():
     )
 
     return response, 200
-
-@app.route('/api/user-info', methods=['GET'])
-@jwt_required()
-def get_user_info():
-    """
-    Endpoint to get current user information and lunch status
-    Uses Student model and TodayLunch relationship
-    """
-    # Get the full name from JWT token
-    full_name = get_jwt_identity()
-    print(full_name)
-    try:
-        student = split_name(full_name)
-
-        # Get today's lunch information
-        today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
-
-        return jsonify({
-            'name': f"{student.name} {student.surname}",
-            'lunch': {
-                'hasLunch': today_lunch is not None,
-                'number': today_lunch.lunch_id if today_lunch else None
-            }
-        }), 200
-
-    except Exception as e:
-        print(f"Error getting student info: {e}")
-        return jsonify({
-            'error': 'Failed to retrieve student information'
-        }), 500
-
-def get_current_date_str():
-    # Get current date in EU format (DD-MM-YYYY)
-    prague_tz = pytz.timezone('Europe/Prague')
-    current_date = datetime.datetime.now(prague_tz)
-    return current_date.strftime('%d-%m-%Y')
-
-
-def should_clear_database():
-    """Check if we should clear the database (new day started)"""
-    try:
-        prague_tz = pytz.timezone('Europe/Prague')
-        current_date = datetime.datetime.now(prague_tz).date()
-
-        # Get the date of the last lunch entry from GivenLunch
-        last_given_lunch = GivenLunch.query.order_by(GivenLunch.timestamp.desc()).first()
-
-        # If there are no given lunches, check TodayLunch
-        if not last_given_lunch:
-            today_lunch = TodayLunch.query.first()
-            if not today_lunch:
-                # If both tables are empty, only clear if there's no data at all
-                student_count = Student.query.count()
-                return student_count == 0
-            return False
-
-        last_lunch_date = last_given_lunch.timestamp.date()
-        return current_date > last_lunch_date
-
-    except Exception as e:
-        print(f"Error checking database date: {e}")
-        return False  # Default to not clearing on error
 
 # Route to upload PDF file
 @app.route('/upload', methods=['POST'])
@@ -387,62 +347,6 @@ def upload_pdf():
     else:
         return jsonify({'error': 'Invalid file type. Only .pdf files are allowed'}), 400
 
-def export_lunch_history(history_folder):
-    """Export lunch history to an Excel file."""
-    # Query the given lunches and join with student data
-    given_lunches = db.session.query(
-        Student.name, GivenLunch.lunch_id, GivenLunch.timestamp
-    ).join(Student, Student.id == GivenLunch.student_id) \
-        .order_by(Student.name).all()
-
-    print(f"Given lunches data: {given_lunches}")  # Debugging
-
-    if given_lunches:
-        # Convert the data to a DataFrame with time in 24-hour format
-        data = [
-            {
-                'name': name,
-                'lunch': lunch_id,
-                'timestamp': timestamp.strftime('%H:%M:%S')  # Time in 24-hour format
-            }
-            for name, lunch_id, timestamp in given_lunches
-        ]
-        df = pd.DataFrame(data)
-
-        # Get the date of the first given lunch
-        first_given_lunch = db.session.query(GivenLunch.timestamp).order_by(GivenLunch.timestamp).first()
-        print(f"First given lunch timestamp: {first_given_lunch}")  # Debugging
-
-        if first_given_lunch:
-            date_str = first_given_lunch.timestamp.strftime('%d-%m-%Y')  # EU format for the file name
-            file_name = f"lunches {date_str}.xlsx"
-            file_path = os.path.join(history_folder, file_name)
-
-            # Save the DataFrame to an Excel file
-            print(f"Saving file to: {file_path}")  # Debugging
-            df.to_excel(file_path, index=False)
-        else:
-            print("No given lunches found to export.")
-    else:
-        print("No given lunches data available.")
-
-
-def clear_existing_data():
-    """Clear existing lunch data from the database."""
-    db.session.query(TodayLunch).delete()
-    db.session.commit()
-
-    db.session.query(AvailableLunch).delete()
-    db.session.commit()
-
-    db.session.query(GivenLunch).delete()
-    db.session.commit()
-
-    db.session.query(AvailableLunch).update({AvailableLunch.quantity: 0})
-    db.session.commit()
-    print("Existing data cleared from database")
-
-
 @app.route('/lunch', methods=['POST'])
 def get_lunch_by_card():
     data = request.get_json()
@@ -474,96 +378,6 @@ def get_lunch_by_card():
     db.session.commit()
 
     return jsonify({'message': f'Lunch {lunch_id} given to student {student.name} successfully'}), 200
-
-@app.route('/api/lunches', methods=['GET'])
-def get_lunches():
-    lunches = AvailableLunch.query.all()
-    print({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches})
-    return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
-
-
-@app.route('/api/students', methods=['GET'])
-@jwt_required()
-def get_students():
-    """
-    Get list of students who don't have lunch assigned
-    JWT protected route
-    """
-    try:
-        students = Student.query.all()
-        student_list = []
-
-        for student in students:
-            # Check if student has a lunch assigned today
-            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
-
-            # Only include students who DON'T have a lunch
-            if today_lunch is None:
-                student_data = {
-                    'id': student.id,
-                    'full_name': f"{student.name} {student.surname}",
-                    'picture': student.pictureURL,
-                }
-                student_list.append(student_data)
-
-        return jsonify({
-            'students': student_list,
-            'count': len(student_list)
-        }), 200
-
-    except Exception as e:
-        print(f"Error getting students: {e}")
-        return jsonify({'error': 'Failed to retrieve students'}), 500
-
-@app.route('/api/getAll', methods=['GET'])
-@jwt_required()
-def get_all_students():
-    try:
-        students = Student.query.all()
-        student_list = []
-
-        for student in students:
-            student_data = {
-                'full_name': f"{student.name} {student.surname}",
-                'picture': student.pictureURL,
-                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first() is not None
-            }
-            student_list.append(student_data)
-
-        return jsonify({
-            'users': student_list,
-        }), 200
-
-    except Exception as e:
-        print(f"Error getting all students: {e}")
-        return jsonify({'error': 'Failed to retrieve students'}), 500
-
-@app.route('/api/recentLunches', methods=['GET'])
-@jwt_required()
-def get_recent_lunches():
-    try:
-        recent_lunches = db.session.query(
-            GivenLunch, Student
-        ).join(Student, GivenLunch.student_id == Student.id) \
-            .order_by(GivenLunch.timestamp.desc()) \
-            .limit(10).all()
-
-        lunch_list = []
-        for given_lunch, student in recent_lunches:
-            lunch_data = {
-                'student_name': f"{student.name} {student.surname}",
-                'lunch_id': given_lunch.lunch_id,
-                'timestamp': given_lunch.timestamp.strftime('%H:%M:%S')
-            }
-            lunch_list.append(lunch_data)
-
-        return jsonify({
-            'recent_lunches': lunch_list
-        }), 200
-
-    except Exception as e:
-        print(f"Error getting recent lunches: {e}")
-        return jsonify({'error': 'Failed to retrieve recent lunches'}), 500
 
 @app.route('/api/give_lunch', methods=['POST'])
 @jwt_required()
@@ -676,40 +490,6 @@ def give_lunch_direct():
         db.session.rollback()
         return jsonify({'error': f'Failed to transfer lunch: {str(e)}'}), 500
 
-def split_name(full_name):
-    # Debug logging
-    print(f"DEBUG: Full name received: '{full_name}'")
-    print(f"DEBUG: Full name type: {type(full_name)}")
-    print(f"DEBUG: Full name repr: {repr(full_name)}")
-
-    # Split into first name and surname
-    name_parts = full_name.split(' ', 1)
-    print(f"DEBUG: Name parts: {name_parts}")
-
-    if len(name_parts) != 2:
-        print(f"DEBUG: Invalid name format - expected 2 parts, got {len(name_parts)}")
-        return jsonify({'error': 'Invalid name format'}), 400
-
-    first_name, surname = name_parts
-    print(f"DEBUG: First name: '{first_name}', Surname: '{surname}'")
-
-    # Find student by name and surname
-    student = Student.query.filter_by(name=first_name, surname=surname).first()
-    print(f"DEBUG: Student found: {student}")
-
-    if not student:
-        print(f"DEBUG: No student found with name='{first_name}' and surname='{surname}'")
-        # Let's also check what students exist
-        all_students = Student.query.all()
-        print(f"DEBUG: All students in database:")
-        for s in all_students:
-            print(f"  - ID: {s.id}, Name: '{s.name}', Surname: '{s.surname}'")
-        return jsonify({'error': 'Student not found'}), 404
-    else:
-        print(f"DEBUG: Found student: {student.name} {student.surname}")
-        return student
-
-
 @app.route('/api/request_lunch', methods=['POST'])
 @jwt_required()
 def request_lunch():
@@ -812,7 +592,257 @@ def assign_card():
         db.session.rollback()
         return jsonify({'error': f'Failed to assign card: {str(e)}'}), 500
 
+# =========================
+# GET ROUTES
+# =========================
+
+@app.route('/api/user-info', methods=['GET'])
+@jwt_required()
+def get_user_info():
+    """
+    Endpoint to get current user information and lunch status
+    Uses Student model and TodayLunch relationship
+    """
+    # Get the full name from JWT token
+    full_name = get_jwt_identity()
+    print(full_name)
+    try:
+        student = split_name(full_name)
+
+        # Get today's lunch information
+        today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+        return jsonify({
+            'name': f"{student.name} {student.surname}",
+            'lunch': {
+                'hasLunch': today_lunch is not None,
+                'number': today_lunch.lunch_id if today_lunch else None
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting student info: {e}")
+        return jsonify({
+            'error': 'Failed to retrieve student information'
+        }), 500
+
+@app.route('/api/lunches', methods=['GET'])
+def get_lunches():
+    lunches = AvailableLunch.query.all()
+    print({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches})
+    return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
+
+@app.route('/api/students', methods=['GET'])
+@jwt_required()
+def get_students():
+    """
+    Get list of students who don't have lunch assigned
+    JWT protected route
+    """
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            # Check if student has a lunch assigned today
+            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+            # Only include students who DON'T have a lunch
+            if today_lunch is None:
+                student_data = {
+                    'id': student.id,
+                    'full_name': f"{student.name} {student.surname}",
+                    'picture': student.pictureURL,
+                }
+                student_list.append(student_data)
+
+        return jsonify({
+            'students': student_list,
+            'count': len(student_list)
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting students: {e}")
+        return jsonify({'error': 'Failed to retrieve students'}), 500
+
+@app.route('/api/getAll', methods=['GET'])
+@jwt_required()
+def get_all_students():
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            student_data = {
+                'full_name': f"{student.name} {student.surname}",
+                'picture': student.pictureURL,
+                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first() is not None
+            }
+            student_list.append(student_data)
+
+        return jsonify({
+            'users': student_list,
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting all students: {e}")
+        return jsonify({'error': 'Failed to retrieve students'}), 500
+
+reordered@app.route('/api/recentLunches', methods=['GET'])
+@jwt_required()
+def get_recent_lunches():
+    try:
+        recent_lunches = db.session.query(
+            GivenLunch, Student
+        ).join(Student, GivenLunch.student_id == Student.id) \
+            .order_by(GivenLunch.timestamp.desc()) \
+            .limit(10).all()
+
+        lunch_list = []
+        for given_lunch, student in recent_lunches:
+            lunch_data = {
+                'student_name': f"{student.name} {student.surname}",
+                'lunch_id': given_lunch.lunch_id,
+                'timestamp': given_lunch.timestamp.strftime('%H:%M:%S')
+            }
+            lunch_list.append(lunch_data)
+
+        return jsonify({
+            'recent_lunches': lunch_list
+        }), 200
+
+    except Exception as e:
+        print(f"Error getting recent lunches: {e}")
+        return jsonify({'error': 'Failed to retrieve recent lunches'}), 500
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
+
+def get_current_date_str():
+    # Get current date in EU format (DD-MM-YYYY)
+    prague_tz = pytz.timezone('Europe/Prague')
+    current_date = datetime.datetime.now(prague_tz)
+    return current_date.strftime('%d-%m-%Y')
+
+
+def should_clear_database():
+    """Check if we should clear the database (new day started)"""
+    try:
+        prague_tz = pytz.timezone('Europe/Prague')
+        current_date = datetime.datetime.now(prague_tz).date()
+
+        # Get the date of the last lunch entry from GivenLunch
+        last_given_lunch = GivenLunch.query.order_by(GivenLunch.timestamp.desc()).first()
+
+        # If there are no given lunches, check TodayLunch
+        if not last_given_lunch:
+            today_lunch = TodayLunch.query.first()
+            if not today_lunch:
+                # If both tables are empty, only clear if there's no data at all
+                student_count = Student.query.count()
+                return student_count == 0
+            return False
+
+        last_lunch_date = last_given_lunch.timestamp.date()
+        return current_date > last_lunch_date
+
+    except Exception as e:
+        print(f"Error checking database date: {e}")
+        return False  # Default to not clearing on error
+
+def export_lunch_history(history_folder):
+    """Export lunch history to an Excel file."""
+    # Query the given lunches and join with student data
+    given_lunches = db.session.query(
+        Student.name, GivenLunch.lunch_id, GivenLunch.timestamp
+    ).join(Student, Student.id == GivenLunch.student_id) \
+        .order_by(Student.name).all()
+
+    print(f"Given lunches data: {given_lunches}")  # Debugging
+
+    if given_lunches:
+        # Convert the data to a DataFrame with time in 24-hour format
+        data = [
+            {
+                'name': name,
+                'lunch': lunch_id,
+                'timestamp': timestamp.strftime('%H:%M:%S')  # Time in 24-hour format
+            }
+            for name, lunch_id, timestamp in given_lunches
+        ]
+        df = pd.DataFrame(data)
+
+        # Get the date of the first given lunch
+        first_given_lunch = db.session.query(GivenLunch.timestamp).order_by(GivenLunch.timestamp).first()
+        print(f"First given lunch timestamp: {first_given_lunch}")  # Debugging
+
+        if first_given_lunch:
+            date_str = first_given_lunch.timestamp.strftime('%d-%m-%Y')  # EU format for the file name
+            file_name = f"lunches {date_str}.xlsx"
+            file_path = os.path.join(history_folder, file_name)
+
+            # Save the DataFrame to an Excel file
+            print(f"Saving file to: {file_path}")  # Debugging
+            df.to_excel(file_path, index=False)
+        else:
+            print("No given lunches found to export.")
+    else:
+        print("No given lunches data available.")
+
+
+def clear_existing_data():
+    """Clear existing lunch data from the database."""
+    db.session.query(TodayLunch).delete()
+    db.session.commit()
+
+    db.session.query(AvailableLunch).delete()
+    db.session.commit()
+
+    db.session.query(GivenLunch).delete()
+    db.session.commit()
+
+    db.session.query(AvailableLunch).update({AvailableLunch.quantity: 0})
+    db.session.commit()
+    print("Existing data cleared from database")
+
+
+def split_name(full_name):
+    # Debug logging
+    print(f"DEBUG: Full name received: '{full_name}'")
+    print(f"DEBUG: Full name type: {type(full_name)}")
+    print(f"DEBUG: Full name repr: {repr(full_name)}")
+
+    # Split into first name and surname
+    name_parts = full_name.split(' ', 1)
+    print(f"DEBUG: Name parts: {name_parts}")
+
+    if len(name_parts) != 2:
+        print(f"DEBUG: Invalid name format - expected 2 parts, got {len(name_parts)}")
+        return jsonify({'error': 'Invalid name format'}), 400
+
+    first_name, surname = name_parts
+    print(f"DEBUG: First name: '{first_name}', Surname: '{surname}'")
+
+    # Find student by name and surname
+    student = Student.query.filter_by(name=first_name, surname=surname).first()
+    print(f"DEBUG: Student found: {student}")
+
+    if not student:
+        print(f"DEBUG: No student found with name='{first_name}' and surname='{surname}'")
+        # Let's also check what students exist
+        all_students = Student.query.all()
+        print(f"DEBUG: All students in database:")
+        for s in all_students:
+            print(f"  - ID: {s.id}, Name: '{s.name}', Surname: '{s.surname}'")
+        return jsonify({'error': 'Student not found'}), 404
+    else:
+        print(f"DEBUG: Found student: {student.name} {student.surname}")
+        return student
+
+
 if __name__ == '__main__':
+    socketio.run(app, debug=True, port=5000)
     # Ensure DB tables exist for dev (prevents "no such table" errors)
     with app.app_context():
         try:
@@ -833,3 +863,4 @@ if __name__ == '__main__':
             print(f"Ngrok start skipped/failed: {e}")
 
     app.run(debug=True, use_reloader=False)
+
