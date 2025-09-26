@@ -22,4 +22,4 @@ uploads/
 LunchHistory/
 *.xlsx
 #database lol
-instance/
+instance/lunch_app.db

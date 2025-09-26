@@ -530,8 +530,6 @@ def get_all_students():
             }
             student_list.append(student_data)
 
-            print(student_list)
-
         return jsonify({
             'users': student_list,
         }), 200
