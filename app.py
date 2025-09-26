@@ -1,4 +1,3 @@
-import app
 from flask import Flask, request, jsonify, redirect, url_for, session
 from models import db, Student, TodayLunch, AvailableLunch, GivenLunch
 from flask_migrate import Migrate
@@ -9,7 +8,7 @@ import os
 import datetime
 import pytz
 from dotenv import load_dotenv
-from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required
+from flask_jwt_extended import JWTManager, create_access_token, get_jwt_identity, jwt_required, decode_token
 from datetime import timedelta
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -34,25 +33,20 @@ jwt = JWTManager(app)
 @jwt.expired_token_loader
 def expired_token_callback(jwt_header, jwt_payload):
     print("JWT ERROR: Token expired")
-    print(f"JWT HEADER: {jwt_header}")
-    print(f"JWT PAYLOAD: {jwt_payload}")
     return jsonify({"error": "Token has expired"}), 401
 
 @jwt.invalid_token_loader
 def invalid_token_callback(error):
     print(f"JWT ERROR: Invalid JWT token: {error}")
-    print(f"JWT ERROR TYPE: {type(error)}")
     return jsonify({"error": "Invalid token"}), 401
 
 @jwt.unauthorized_loader
 def missing_token_callback(error):
     print(f"JWT ERROR: Missing JWT token: {error}")
-    print(f"JWT ERROR TYPE: {type(error)}")
     return jsonify({"error": "Authorization token required"}), 401
 
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload):
-    print(f"JWT CHECK: Token blocklist check - Header: {jwt_header}, Payload: {jwt_payload}")
     return False
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
@@ -62,7 +56,6 @@ UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
-
 
 CORS(app, resources={r"/*": {
     "origins": [FRONTEND_URL],  # Be explicit with protocol
@@ -79,31 +72,44 @@ migrate = Migrate(app, db)
 # Set ngrok authtoken
 conf.get_default().auth_token = os.getenv('NGROK_AUTH_TOKEN')
 
-# Inicializace SocketIO
-socketio = SocketIO(app, cors_allowed_origins=os.getenv(FRONTEND_URL),
+socketio = SocketIO(app, cors_allowed_origins=[FRONTEND_URL],
                    async_mode='threading',
-                   logger=True,
-                   engineio_logger=True)
+                   logger=False,
+                   engineio_logger=False)
+
+# Helper function to validate JWT token from Socket.IO
+def validate_jwt_token(token):
+    """Validate JWT token and return the user identity"""
+    try:
+        from flask_jwt_extended import decode_token
+        decoded_token = decode_token(token)
+        return decoded_token['sub']  # 'sub' contains the identity
+    except Exception as e:
+        print(f"JWT validation error: {e}")
+        return None
 
 @socketio.on('connect')
-@jwt_required()
-def handle_connect():
-    user_id = get_jwt_identity()
-    join_room('lunch_updates')
-    emit('connected', {'message': 'Connected to lunch updates'})
+def handle_connect(auth):
+    """Handle client connection with JWT authentication"""
+    if auth and 'token' in auth:
+        user_identity = validate_jwt_token(auth['token'])
+        if user_identity:
+            join_room('lunch_updates')
+            join_room(f'user_{user_identity}')  # User-specific room
+            emit('connected', {'message': 'Connected to lunch updates', 'user': user_identity})
+            print(f"User {user_identity} connected to Socket.IO")
+        else:
+            emit('error', {'message': 'Invalid authentication token'})
+            return False
+    else:
+        # For backwards compatibility, allow connection without auth for now
+        join_room('lunch_updates')
+        emit('connected', {'message': 'Connected to lunch updates'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     leave_room('lunch_updates')
-
-
-@app.before_request
-def log_request_info():
-    print('\n=== Request Info ===')
-    print(f'Headers: {dict(request.headers)}')
-    print(f'Cookies: {request.cookies}')
-    print(f'Data: {request.get_json(silent=True)}')
-    print('===================\n')
+    print("Client disconnected from Socket.IO")
 
 # =========================
 # POST ROUTES
@@ -170,7 +176,7 @@ def verify_token():
             'access_token_cookie',
             access_token,
             secure=False,  # Set to False for development (localhost)
-            httponly=True,
+            httponly=False,
             samesite='Lax',  # Changed from 'None' to 'Lax' for localhost
             domain=None,
             max_age=30 * 24 * 60 * 60
@@ -194,8 +200,7 @@ def logout():
         'access_token_cookie',
         secure=False,  # Set to False for development (localhost)
         httponly=True,
-        samesite='Lax',  # Changed from 'None' to 'Lax' for localhost
-        domain=None
+        samesite='Lax'  # Changed from 'None' to 'Lax' for localhost
     )
 
     return response, 200
@@ -407,9 +412,15 @@ def give_lunch():
             db.session.add(available_lunch)
 
         db.session.commit()
+
+        # Broadcast real-time updates to all connected clients
+        broadcast_lunch_updates()
+        broadcast_student_updates()
+        broadcast_user_info_update(full_name)
+
         return jsonify({
             'message': f'Lunch {lunch_id} given successfully',
-            'student': f"{student.name} {student.surname}"  # Fixed: use student.name instead of student.first_name
+            'student': f"{student.name} {student.surname}"
         }), 200
 
     except Exception as e:
@@ -494,66 +505,44 @@ def give_lunch_direct():
 @jwt_required()
 def request_lunch():
     full_name = get_jwt_identity()
-    print(f"JWT SUCCESS: Full name: {full_name}")
 
     # Get the student object
     student = split_name(full_name)
-    if not isinstance(student, Student):  # Handle error responses from split_name
-        print(f"ERROR: split_name returned non-Student object: {student}")
+    if not isinstance(student, Student):
         return student
 
-    print(f"SUCCESS: Found student: {student.name} {student.surname} (ID: {student.id})")
-
     data = request.get_json()
-    print(f"Request data: {data}")
-
-    lunch_id = data.get('lunch_id')  # Match the frontend key name
-    print(f"Extracted lunch_id: {lunch_id}")
+    lunch_id = data.get('lunch_id')
 
     if not lunch_id:
-        print("ERROR: lunch_id is missing from request")
         return jsonify({'error': 'lunch_id is required'}), 400
 
     try:
-        lunch_id = int(lunch_id)  # Convert string to integer
-        print(f"Converted lunch_id to int: {lunch_id}")
+        lunch_id = int(lunch_id)
     except ValueError:
-        print(f"ERROR: lunch_id conversion failed for value: {lunch_id}")
         return jsonify({'error': 'lunch_id must be a number'}), 400
 
-    print(f"Looking for available lunch with ID: {lunch_id}")
     available_lunch = AvailableLunch.query.filter_by(lunch_id=lunch_id).with_for_update().first()
-    print(f"Available lunch found: {available_lunch}")
 
-    if not available_lunch:
-        print("ERROR: No available lunch found")
-        # Let's see what lunches are available
-        all_lunches = AvailableLunch.query.all()
-        print(f"All available lunches: {[(l.lunch_id, l.quantity) for l in all_lunches]}")
+    if not available_lunch or available_lunch.quantity <= 0:
         return jsonify({'error': 'Requested lunch is not available'}), 404
 
-    if available_lunch.quantity <= 0:
-        print(f"ERROR: Available lunch quantity is {available_lunch.quantity}")
-        return jsonify({'error': 'Requested lunch is not available'}), 404
-
-    print(f"Checking if student {student.id} already has a lunch...")
     daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
-    print(f"Existing daily lunch: {daily_lunch}")
-
     if daily_lunch:
-        print(f"ERROR: Student already has lunch {daily_lunch.lunch_id}")
         return jsonify({'error': 'Student already has a lunch assigned'}), 400
 
-    print(f"Processing lunch assignment: reducing quantity from {available_lunch.quantity} to {available_lunch.quantity - 1}")
     available_lunch.quantity -= 1
-
     new_daily_lunch = TodayLunch(student_id=student.id, lunch_id=lunch_id)
     db.session.add(new_daily_lunch)
-    print(f"Added new daily lunch: {new_daily_lunch}")
 
     try:
         db.session.commit()
-        print("Database commit successful")
+
+        # Broadcast real-time updates to all connected clients
+        broadcast_lunch_updates()
+        broadcast_student_updates()
+        broadcast_user_info_update(full_name)
+
         return jsonify({'message': f'Lunch {lunch_id} assigned to {student.name} successfully'}), 200
     except Exception as e:
         print(f"Database commit failed: {e}")
@@ -593,19 +582,295 @@ def assign_card():
         return jsonify({'error': f'Failed to assign card: {str(e)}'}), 500
 
 # =========================
-# GET ROUTES
+# REAL-TIME UPDATE FUNCTIONS
+# =========================
+
+def broadcast_lunch_updates():
+    """Broadcast updated lunch data to all connected clients"""
+    try:
+        lunches = AvailableLunch.query.all()
+        lunch_data = {f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}
+        socketio.emit('lunches_response', lunch_data, room='lunch_updates')
+        print("Broadcasted lunch updates to all clients")
+    except Exception as e:
+        print(f"Error broadcasting lunch updates: {e}")
+
+def broadcast_student_updates():
+    """Broadcast updated student data to all connected clients"""
+    try:
+        # Broadcast students without lunch
+        students = Student.query.all()
+        student_list = []
+        all_students_list = []
+
+        for student in students:
+            # Check if student has a lunch assigned today
+            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+            has_lunch = today_lunch is not None
+
+            # For students without lunch list
+            if not has_lunch:
+                student_data = {
+                    'id': student.id,
+                    'full_name': f"{student.name} {student.surname}",
+                    'picture': student.pictureURL,
+                }
+                student_list.append(student_data)
+
+            # For all students list
+            all_student_data = {
+                'full_name': f"{student.name} {student.surname}",
+                'picture': student.pictureURL,
+                'has_lunch': has_lunch
+            }
+            all_students_list.append(all_student_data)
+
+        # Broadcast both lists
+        socketio.emit('students_response', {
+            'students': student_list,
+            'count': len(student_list)
+        }, room='lunch_updates')
+
+        socketio.emit('all_students_response', {
+            'users': all_students_list,
+        }, room='lunch_updates')
+
+        print("Broadcasted student updates to all clients")
+    except Exception as e:
+        print(f"Error broadcasting student updates: {e}")
+
+def broadcast_recent_lunches():
+    """Broadcast updated recent lunches to all connected clients"""
+    try:
+        recent_lunches = db.session.query(
+            GivenLunch, Student
+        ).join(Student, GivenLunch.student_id == Student.id) \
+            .order_by(GivenLunch.timestamp.desc()) \
+            .limit(10).all()
+
+        lunch_list = []
+        for given_lunch, student in recent_lunches:
+            lunch_data = {
+                'student_name': f"{student.name} {student.surname}",
+                'lunch_id': given_lunch.lunch_id,
+                'timestamp': given_lunch.timestamp.strftime('%H:%M:%S')
+            }
+            lunch_list.append(lunch_data)
+
+        socketio.emit('recent_lunches_response', {
+            'recent_lunches': lunch_list
+        }, room='lunch_updates')
+
+        print("Broadcasted recent lunches updates to all clients")
+    except Exception as e:
+        print(f"Error broadcasting recent lunches: {e}")
+
+def broadcast_user_info_update(user_identity):
+    """Broadcast user info update to a specific user"""
+    try:
+        student = split_name(user_identity)
+        if not isinstance(student, Student):
+            return
+
+        # Get today's lunch information
+        today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+        user_info = {
+            'name': f"{student.name} {student.surname}",
+            'lunch': {
+                'hasLunch': today_lunch is not None,
+                'number': today_lunch.lunch_id if today_lunch else None
+            }
+        }
+
+        socketio.emit('user_info_response', user_info, room=f'user_{user_identity}')
+        print(f"Broadcasted user info update to {user_identity}")
+    except Exception as e:
+        print(f"Error broadcasting user info update: {e}")
+
+# =========================
+# SOCKET.IO EVENT HANDLERS (replacing GET routes)
+# =========================
+
+@socketio.on('get_user_info')
+def handle_get_user_info(data):
+    """Socket.IO handler for user info (replaces /api/user-info GET)"""
+    token = data.get('token') if data else None
+    if not token:
+        emit('user_info_error', {'error': 'Authentication token required'})
+        return
+
+    user_identity = validate_jwt_token(token)
+    if not user_identity:
+        emit('user_info_error', {'error': 'Invalid authentication token'})
+        return
+
+    try:
+        student = split_name(user_identity)
+        if not isinstance(student, Student):
+            emit('user_info_error', {'error': 'Student not found'})
+            return
+
+        # Get today's lunch information
+        today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+        user_info = {
+            'name': f"{student.name} {student.surname}",
+            'lunch': {
+                'hasLunch': today_lunch is not None,
+                'number': today_lunch.lunch_id if today_lunch else None
+            }
+        }
+
+        emit('user_info_response', user_info)
+
+    except Exception as e:
+        print(f"Error getting student info: {e}")
+        emit('user_info_error', {'error': 'Failed to retrieve student information'})
+
+@socketio.on('get_lunches')
+def handle_get_lunches(data=None):
+    """Socket.IO handler for available lunches (replaces /api/lunches GET)"""
+    try:
+        lunches = AvailableLunch.query.all()
+        lunch_data = {f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}
+
+        # Emit to the requesting client
+        emit('lunches_response', lunch_data)
+
+    except Exception as e:
+        print(f"Error getting lunches: {e}")
+        emit('lunches_error', {'error': 'Failed to retrieve lunch data'})
+
+@socketio.on('get_students')
+def handle_get_students(data):
+    """Socket.IO handler for students without lunch (replaces /api/students GET)"""
+    token = data.get('token') if data else None
+    if not token:
+        emit('students_error', {'error': 'Authentication token required'})
+        return
+
+    user_identity = validate_jwt_token(token)
+    if not user_identity:
+        emit('students_error', {'error': 'Invalid authentication token'})
+        return
+
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            # Check if student has a lunch assigned today
+            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
+            # Only include students who DON'T have a lunch
+            if today_lunch is None:
+                student_data = {
+                    'id': student.id,
+                    'full_name': f"{student.name} {student.surname}",
+                    'picture': student.pictureURL,
+                }
+                student_list.append(student_data)
+
+        response_data = {
+            'students': student_list,
+            'count': len(student_list)
+        }
+
+        emit('students_response', response_data)
+
+    except Exception as e:
+        print(f"Error getting students: {e}")
+        emit('students_error', {'error': 'Failed to retrieve students'})
+
+@socketio.on('get_all_students')
+def handle_get_all_students(data):
+    """Socket.IO handler for all students (replaces /api/getAll GET)"""
+    token = data.get('token') if data else None
+    if not token:
+        emit('all_students_error', {'error': 'Authentication token required'})
+        return
+
+    user_identity = validate_jwt_token(token)
+    if not user_identity:
+        emit('all_students_error', {'error': 'Invalid authentication token'})
+        return
+
+    try:
+        students = Student.query.all()
+        student_list = []
+
+        for student in students:
+            student_data = {
+                'full_name': f"{student.name} {student.surname}",
+                'picture': student.pictureURL,
+                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first() is not None
+            }
+            student_list.append(student_data)
+
+        response_data = {
+            'users': student_list,
+        }
+
+        emit('all_students_response', response_data)
+
+    except Exception as e:
+        print(f"Error getting all students: {e}")
+        emit('all_students_error', {'error': 'Failed to retrieve students'})
+
+@socketio.on('get_recent_lunches')
+def handle_get_recent_lunches(data):
+    """Socket.IO handler for recent lunches (replaces /api/recentLunches GET)"""
+    token = data.get('token') if data else None
+    if not token:
+        emit('recent_lunches_error', {'error': 'Authentication token required'})
+        return
+
+    user_identity = validate_jwt_token(token)
+    if not user_identity:
+        emit('recent_lunches_error', {'error': 'Invalid authentication token'})
+        return
+
+    try:
+        recent_lunches = db.session.query(
+            GivenLunch, Student
+        ).join(Student, GivenLunch.student_id == Student.id) \
+            .order_by(GivenLunch.timestamp.desc()) \
+            .limit(10).all()
+
+        lunch_list = []
+        for given_lunch, student in recent_lunches:
+            lunch_data = {
+                'student_name': f"{student.name} {student.surname}",
+                'lunch_id': given_lunch.lunch_id,
+                'timestamp': given_lunch.timestamp.strftime('%H:%M:%S')
+            }
+            lunch_list.append(lunch_data)
+
+        response_data = {
+            'recent_lunches': lunch_list
+        }
+
+        emit('recent_lunches_response', response_data)
+
+    except Exception as e:
+        print(f"Error getting recent lunches: {e}")
+        emit('recent_lunches_error', {'error': 'Failed to retrieve recent lunches'})
+
+# =========================
+# GET ROUTES (DEPRECATED - Use Socket.IO events instead)
 # =========================
 
 @app.route('/api/user-info', methods=['GET'])
 @jwt_required()
 def get_user_info():
     """
+    DEPRECATED: Use Socket.IO 'get_user_info' event instead
     Endpoint to get current user information and lunch status
-    Uses Student model and TodayLunch relationship
     """
     # Get the full name from JWT token
     full_name = get_jwt_identity()
-    print(full_name)
+    print(f"DEPRECATED GET /api/user-info called for {full_name}")
     try:
         student = split_name(full_name)
 
@@ -617,7 +882,9 @@ def get_user_info():
             'lunch': {
                 'hasLunch': today_lunch is not None,
                 'number': today_lunch.lunch_id if today_lunch else None
-            }
+            },
+            'deprecated': True,
+            'message': 'Please use Socket.IO get_user_info event instead'
         }), 200
 
     except Exception as e:
@@ -628,17 +895,25 @@ def get_user_info():
 
 @app.route('/api/lunches', methods=['GET'])
 def get_lunches():
+    """
+    DEPRECATED: Use Socket.IO 'get_lunches' event instead
+    """
+    print("DEPRECATED GET /api/lunches called")
     lunches = AvailableLunch.query.all()
-    print({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches})
-    return jsonify({f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}), 200
+    lunch_data = {f"lunch {lunch.lunch_id}": lunch.quantity for lunch in lunches}
+    return jsonify({
+        **lunch_data,
+        'deprecated': True,
+        'message': 'Please use Socket.IO get_lunches event instead'
+    }), 200
 
 @app.route('/api/students', methods=['GET'])
 @jwt_required()
 def get_students():
     """
-    Get list of students who don't have lunch assigned
-    JWT protected route
+    DEPRECATED: Use Socket.IO 'get_students' event instead
     """
+    print("DEPRECATED GET /api/students called")
     try:
         students = Student.query.all()
         student_list = []
@@ -658,7 +933,9 @@ def get_students():
 
         return jsonify({
             'students': student_list,
-            'count': len(student_list)
+            'count': len(student_list),
+            'deprecated': True,
+            'message': 'Please use Socket.IO get_students event instead'
         }), 200
 
     except Exception as e:
@@ -668,6 +945,10 @@ def get_students():
 @app.route('/api/getAll', methods=['GET'])
 @jwt_required()
 def get_all_students():
+    """
+    DEPRECATED: Use Socket.IO 'get_all_students' event instead
+    """
+    print("DEPRECATED GET /api/getAll called")
     try:
         students = Student.query.all()
         student_list = []
@@ -682,6 +963,8 @@ def get_all_students():
 
         return jsonify({
             'users': student_list,
+            'deprecated': True,
+            'message': 'Please use Socket.IO get_all_students event instead'
         }), 200
 
     except Exception as e:
@@ -691,6 +974,10 @@ def get_all_students():
 @app.route('/api/recentLunches', methods=['GET'])
 @jwt_required()
 def get_recent_lunches():
+    """
+    DEPRECATED: Use Socket.IO 'get_recent_lunches' event instead
+    """
+    print("DEPRECATED GET /api/recentLunches called")
     try:
         recent_lunches = db.session.query(
             GivenLunch, Student
@@ -708,7 +995,9 @@ def get_recent_lunches():
             lunch_list.append(lunch_data)
 
         return jsonify({
-            'recent_lunches': lunch_list
+            'recent_lunches': lunch_list,
+            'deprecated': True,
+            'message': 'Please use Socket.IO get_recent_lunches event instead'
         }), 200
 
     except Exception as e:
@@ -724,7 +1013,6 @@ def get_current_date_str():
     prague_tz = pytz.timezone('Europe/Prague')
     current_date = datetime.datetime.now(prague_tz)
     return current_date.strftime('%d-%m-%Y')
-
 
 def should_clear_database():
     """Check if we should clear the database (new day started)"""
@@ -790,7 +1078,6 @@ def export_lunch_history(history_folder):
     else:
         print("No given lunches data available.")
 
-
 def clear_existing_data():
     """Clear existing lunch data from the database."""
     db.session.query(TodayLunch).delete()
@@ -806,43 +1093,24 @@ def clear_existing_data():
     db.session.commit()
     print("Existing data cleared from database")
 
-
 def split_name(full_name):
-    # Debug logging
-    print(f"DEBUG: Full name received: '{full_name}'")
-    print(f"DEBUG: Full name type: {type(full_name)}")
-    print(f"DEBUG: Full name repr: {repr(full_name)}")
-
     # Split into first name and surname
     name_parts = full_name.split(' ', 1)
-    print(f"DEBUG: Name parts: {name_parts}")
 
     if len(name_parts) != 2:
-        print(f"DEBUG: Invalid name format - expected 2 parts, got {len(name_parts)}")
         return jsonify({'error': 'Invalid name format'}), 400
 
     first_name, surname = name_parts
-    print(f"DEBUG: First name: '{first_name}', Surname: '{surname}'")
 
     # Find student by name and surname
     student = Student.query.filter_by(name=first_name, surname=surname).first()
-    print(f"DEBUG: Student found: {student}")
 
     if not student:
-        print(f"DEBUG: No student found with name='{first_name}' and surname='{surname}'")
-        # Let's also check what students exist
-        all_students = Student.query.all()
-        print(f"DEBUG: All students in database:")
-        for s in all_students:
-            print(f"  - ID: {s.id}, Name: '{s.name}', Surname: '{s.surname}'")
         return jsonify({'error': 'Student not found'}), 404
     else:
-        print(f"DEBUG: Found student: {student.name} {student.surname}")
         return student
 
-
 if __name__ == '__main__':
-    socketio.run(app, debug=True, port=5000)
     # Ensure DB tables exist for dev (prevents "no such table" errors)
     with app.app_context():
         try:
@@ -862,5 +1130,5 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Ngrok start skipped/failed: {e}")
 
-    app.run(debug=True, use_reloader=False)
-
+    # Use only socketio.run() for Flask-SocketIO apps
+    socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)
