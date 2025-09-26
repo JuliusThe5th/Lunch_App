@@ -1,10 +1,7 @@
 from flask import Flask, request, jsonify, redirect, url_for, session
-from google.oauth2 import id_token
-from google.auth.transport import requests  # Add this import
 from models import db, Student, TodayLunch, AvailableLunch, GivenLunch
 from flask_migrate import Migrate
 from pyngrok import ngrok, conf
-from authlib.integrations.flask_client import OAuth
 import pandas as pd
 import hashlib
 import os
