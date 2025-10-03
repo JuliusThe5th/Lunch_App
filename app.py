@@ -368,7 +368,12 @@ def get_lunch_by_card():
     # Find the lunch assigned to the student
     daily_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
     if not daily_lunch:
-        return jsonify({'error': 'Lunch data not found for the student'}), 404
+        return jsonify(
+            {
+                'name': student.name,
+                'surname': student.surname,
+                'error': 'Lunch data not found for the student'
+            }), 404
 
     lunch_id = daily_lunch.lunch_id
 
@@ -382,7 +387,12 @@ def get_lunch_by_card():
     # Commit the changes
     db.session.commit()
 
-    return jsonify({'message': f'Lunch {lunch_id} given to student {student.name} successfully'}), 200
+    return jsonify(
+        {
+            'name': student.name,
+            'surname': student.surname,
+            'Lunch': lunch_id,
+        }), 200
 
 @app.route('/api/give_lunch', methods=['POST'])
 @jwt_required()
@@ -552,16 +562,17 @@ def request_lunch():
 @app.route('/assign_card', methods=['POST'])
 def assign_card():
     data = request.get_json()
-    student_name = data.get('student_name')
+    name = data.get('name')
+    surname = data.get('surname')
     card_uid = data.get('card_uid')
 
-    if not student_name or not card_uid:
-        return jsonify({'error': 'Both student_name and card_uid are required'}), 400
+    if not name and surname or not card_uid:
+        return jsonify({'error': 'Name, surname and card_uid are required'}), 400
 
     # Find student by name
-    student = Student.query.filter_by(name=student_name).first()
+    student = Student.query.filter_by(name=name).first() and Student.query.filter_by(surname=surname).first()
     if not student:
-        return jsonify({'error': f'Student {student_name} not found'}), 404
+        return jsonify({'error': f'Student {name} {surname} not found'}), 404
 
     # Check if card_uid is already assigned
     existing_card = Student.query.filter_by(card_id=card_uid).first()
@@ -574,7 +585,8 @@ def assign_card():
         db.session.commit()
         return jsonify({
             'message': 'Card assigned successfully',
-            'student': student.name,
+            'name': student.name,
+            'surname': student.surname,
             'card_uid': card_uid
         }), 200
     except Exception as e:
@@ -760,17 +772,14 @@ def handle_get_students(data):
         student_list = []
 
         for student in students:
-            # Check if student has a lunch assigned today
-            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
-
-            # Only include students who DON'T have a lunch
-            if today_lunch is None:
-                student_data = {
-                    'id': student.id,
-                    'full_name': f"{student.name} {student.surname}",
-                    'picture': student.pictureURL,
-                }
-                student_list.append(student_data)
+            student_data = {
+                'id': student.id,
+                'full_name': f"{student.name} {student.surname}",
+                'picture': student.pictureURL,
+                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first(),
+                'has_card': student.card_id is not None,
+            }
+            student_list.append(student_data)
 
         response_data = {
             'students': student_list,
@@ -783,17 +792,18 @@ def handle_get_students(data):
         print(f"Error getting students: {e}")
         emit('students_error', {'error': 'Failed to retrieve students'})
 
-@socketio.on('get_all_students')
-def handle_get_all_students(data):
-    """Socket.IO handler for all students (replaces /api/getAll GET)"""
+
+@socketio.on('get_students')
+def handle_get_students(data):
+    """Socket.IO handler for students without lunch (replaces /api/students GET)"""
     token = data.get('token') if data else None
     if not token:
-        emit('all_students_error', {'error': 'Authentication token required'})
+        emit('students_error', {'error': 'Authentication token required'})
         return
 
     user_identity = validate_jwt_token(token)
     if not user_identity:
-        emit('all_students_error', {'error': 'Invalid authentication token'})
+        emit('students_error', {'error': 'Invalid authentication token'})
         return
 
     try:
@@ -801,22 +811,28 @@ def handle_get_all_students(data):
         student_list = []
 
         for student in students:
+            today_lunch = TodayLunch.query.filter_by(student_id=student.id).first()
+
             student_data = {
+                'id': student.id,
                 'full_name': f"{student.name} {student.surname}",
                 'picture': student.pictureURL,
-                'has_lunch': TodayLunch.query.filter_by(student_id=student.id).first() is not None
+                'has_lunch': today_lunch is not None,  # Convert to boolean
+                'has_card': student.card_id is not None,
             }
             student_list.append(student_data)
 
         response_data = {
-            'users': student_list,
+            'students': student_list,
+            'count': len(student_list)
         }
 
-        emit('all_students_response', response_data)
+        emit('students_response', response_data)
 
     except Exception as e:
-        print(f"Error getting all students: {e}")
-        emit('all_students_error', {'error': 'Failed to retrieve students'})
+        print(f"Error getting students: {e} nigger nigger nigger nigger")
+        emit('students_error', {'error': 'Failed to retrieve students'})
+
 
 @socketio.on('get_recent_lunches')
 def handle_get_recent_lunches(data):
@@ -1119,7 +1135,7 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"db.create_all failed: {e}")
 
-    # Start ngrok only when explicitly enabled (prevents Flask CLI import crashes)
+    # Start ngrok only when explicitly enabled (optional feature)
     if os.getenv('ENABLE_NGROK') == '1':
         try:
             public_url = ngrok.connect(
@@ -1130,5 +1146,6 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"Ngrok start skipped/failed: {e}")
 
-    # Use only socketio.run() for Flask-SocketIO apps
+    # Always start with SocketIO (ngrok is optional)
+    print("Starting Flask-SocketIO server...")
     socketio.run(app, debug=True, port=5000, allow_unsafe_werkzeug=True)
