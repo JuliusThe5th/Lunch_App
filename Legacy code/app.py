@@ -52,7 +52,7 @@ def check_if_token_revoked(jwt_header, jwt_payload):
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
-UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
+UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', '../uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
