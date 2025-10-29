@@ -35,8 +35,8 @@ def create_app(config_name=None):
     cors.init_app(app, resources={r"/*": {
         "origins": [app.config['FRONTEND_URL']],
         "supports_credentials": True,
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
         "expose_headers": ["Authorization"],
     }})
 
@@ -57,7 +57,7 @@ def create_app(config_name=None):
     # Register blueprints
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(lunch_bp, url_prefix='/api')
-    app.register_blueprint(admin_bp)
+    app.register_blueprint(admin_bp, url_prefix='/api')
     app.register_blueprint(students_bp, url_prefix='/api')
 
     # Import Socket.IO handlers to register them (must be after socketio.init_app)

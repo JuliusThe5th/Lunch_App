@@ -15,9 +15,13 @@ import datetime
 bp = Blueprint('admin', __name__)
 
 
-@bp.route('/upload', methods=['POST'])
+@bp.route('/upload', methods=['POST', 'OPTIONS'])
 def upload_pdf():
     """Upload and process PDF file with lunch data"""
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file part in the request'}), 400
 
@@ -75,10 +79,18 @@ def upload_pdf():
         return jsonify({'error': 'Invalid file type. Only .pdf files are allowed'}), 400
 
 
-@bp.route('/lunch', methods=['POST'])
+@bp.route('/lunch', methods=['POST', 'OPTIONS'])
 def get_lunch_by_card():
     """Mark lunch as given using card UID (for card reader integration)"""
-    data = request.get_json()
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
+    data = request.get_json(force=True, silent=True)
+
+    if not data:
+        return jsonify({'error': 'Invalid JSON data or no data provided'}), 400
+
     hashed_card_uid = data.get('card_uid')
 
     if not hashed_card_uid:
@@ -105,10 +117,19 @@ def get_lunch_by_card():
     }), 200
 
 
-@bp.route('/assign_card', methods=['POST'])
+@bp.route('/assign_card', methods=['POST', 'OPTIONS'])
 def assign_card():
     """Assign card UID to a student"""
-    data = request.get_json()
+    # Handle OPTIONS preflight request
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+
+    # Try to get JSON data, force=True allows parsing even without Content-Type header
+    data = request.get_json(force=True, silent=True)
+
+    if not data:
+        return jsonify({'error': 'Invalid JSON data or no data provided'}), 400
+
     name = data.get('name')
     surname = data.get('surname')
     card_uid = data.get('card_uid')
