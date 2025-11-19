@@ -3,6 +3,7 @@ from flask_jwt_extended import create_access_token, jwt_required
 from app.extensions import db
 from app.models import Student
 from app.services import split_name
+from firebase_admin import auth as firebase_auth
 
 bp = Blueprint('auth', __name__)
 
@@ -11,12 +12,22 @@ bp = Blueprint('auth', __name__)
 def verify_token():
     """Verify Google OAuth token and create/login user"""
     user_data = request.json
+    print(f"Received user data: {user_data}")
     try:
-        full_name = user_data.get('fullName')
-        picture = user_data.get('picture')
+        id_token = request.json.get('token')
+
+        if not id_token:
+            return jsonify({'error': 'Missing ID token'}), 400
+
+        # Ověření tokenu pomocí Firebase
+        decoded_token = firebase_auth.verify_id_token(id_token)
+        uid = decoded_token['uid']
+        email = decoded_token.get('email')
+        full_name = decoded_token.get('name')
+        picture = decoded_token.get('picture')
 
         if not full_name:
-            return jsonify({'error': 'Invalid user data - missing name components'}), 400
+            return jsonify({'error': 'Invalid user data - missing name'}), 400
 
         student, error, status = split_name(full_name)
 
@@ -66,10 +77,13 @@ def verify_token():
 
         return response
 
+    except firebase_auth.InvalidIdTokenError:
+        return jsonify({'error': 'Invalid token'}), 401
+    except firebase_auth.ExpiredIdTokenError:
+        return jsonify({'error': 'Token expired'}), 401
     except Exception as e:
         print(f"Authentication error: {e}")
         return jsonify({'error': 'Authentication failed'}), 401
-
 
 @bp.route('/logout', methods=['POST'])
 def logout():

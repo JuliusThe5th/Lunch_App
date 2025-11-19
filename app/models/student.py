@@ -8,4 +8,5 @@ class Student(db.Model):
     surname = db.Column(db.String(100), nullable=False)
     pictureURL = db.Column(db.String(200))
     card_id = db.Column(db.String(100), unique=True)
+    isAdmin = db.Column(db.Boolean, default=False)
 
