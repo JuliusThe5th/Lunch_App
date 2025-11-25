@@ -1,4 +1,4 @@
-# Luncheroo - Lunch Management System
+# Lunch Management System
 
 This project is a Flask-based web application designed to manage student lunches. It allows students to authenticate via Google, request lunches, and administrators to upload lunch data through PDF files. The system includes features for tracking lunch history and facilitating lunch transfers between students.
 
