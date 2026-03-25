@@ -22,6 +22,11 @@ def admin_required(fn):
     @wraps(fn)
     @jwt_required()
     def wrapper(*args, **kwargs):
+        # JWT extension skips token processing for OPTIONS preflight by default.
+        # Bypass admin identity checks here and let the route return preflight response.
+        if request.method == 'OPTIONS':
+            return fn(*args, **kwargs)
+
         identity = get_jwt_identity()
         # Find student by name to check if they're admin
         name_parts = identity.split(' ', 1)
