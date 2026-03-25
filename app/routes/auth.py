@@ -63,6 +63,7 @@ def verify_token():
             'message': 'Authentication successful',
             'name': full_name,
             'picture': picture,
+            'is_admin': student.isAdmin,
         })
 
         response.set_cookie(

@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.extensions import db
 from app.models import Student, TodayLunch
 from app.services import (
@@ -11,8 +12,30 @@ from app.services import (
 )
 import os
 import datetime
+from functools import wraps
 
 bp = Blueprint('admin', __name__)
+
+
+def admin_required(fn):
+    """Decorator to check if user is admin"""
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        identity = get_jwt_identity()
+        # Find student by name to check if they're admin
+        name_parts = identity.split(' ', 1)
+        if len(name_parts) < 2:
+            return jsonify({'error': 'Invalid user identity'}), 401
+        
+        first_name, surname = name_parts
+        student = Student.query.filter_by(name=first_name, surname=surname).first()
+        
+        if not student or not student.isAdmin:
+            return jsonify({'error': 'Admin access required'}), 403
+        
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 @bp.route('/upload', methods=['POST', 'OPTIONS'])
@@ -80,6 +103,7 @@ def upload_pdf():
 
 
 @bp.route('/lunch', methods=['POST', 'OPTIONS'])
+@admin_required
 def get_lunch_by_card():
     """Mark lunch as given using card UID (for card reader integration)"""
     # Handle OPTIONS preflight request
@@ -118,6 +142,7 @@ def get_lunch_by_card():
 
 
 @bp.route('/assign_card', methods=['POST', 'OPTIONS'])
+@admin_required
 def assign_card():
     """Assign card UID to a student"""
     # Handle OPTIONS preflight request
