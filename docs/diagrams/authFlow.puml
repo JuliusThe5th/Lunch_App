@@ -1,0 +1,26 @@
+@startuml
+title Firebase Authentication - Google Sign-In (Popup Flow)
+
+actor User
+participant "Web App\n(Frontend)" as App
+participant "Firebase JS SDK" as FirebaseSDK
+participant "Google Auth Server" as Google
+participant "Firebase Auth Handler\n<project>.firebaseapp.com" as Handler
+
+User -> App: Click "Login with Google"
+App -> FirebaseSDK: firebase.auth().signInWithPopup(googleProvider)
+
+FirebaseSDK -> Google: Open popup to Google OAuth\n(client_id, scopes, redirect_uri)
+
+Google -> User: Show Google Login & Consent
+User -> Google: Select account / grant permission
+
+Google -> Handler: Redirect with auth response\n(code or credential)\n?apiKey=PUBLIC_API_KEY
+Handler -> FirebaseSDK: Process redirect result\nvia /__/auth/handler
+
+FirebaseSDK -> Google: Exchange code for tokens\n(if required)
+Google --> FirebaseSDK: id_token, access_token, user info
+
+FirebaseSDK -> App: Return Firebase User object\n+ ID token
+App -> User: Logged in successfully
+@enduml
