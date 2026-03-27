@@ -136,9 +136,10 @@ def save_to_db(student_data):
         )
     """)
 
-    # Clear existing data for today
-    today = datetime.now().strftime("%Y-%m-%d")
-    c.execute("DELETE FROM obed WHERE datum = ?", (today,))
+    # Collect unique dates from the PDF data and delete stale rows for those dates
+    pdf_dates = {row[4] for row in student_data if row[4]}
+    for pdf_date in pdf_dates:
+        c.execute("DELETE FROM obed WHERE datum = ?", (pdf_date,))
 
     # Insert new data
     c.executemany(
@@ -152,7 +153,7 @@ def save_to_db(student_data):
 
 def cleanup_pdfs():
     """Delete processed PDFs"""
-    pdf_dir = "icanteen_pdfs"
+    pdf_dir = SAVE_FOLDER
     if os.path.exists(pdf_dir):
         for file in os.listdir(pdf_dir):
             if file.endswith('.pdf'):
