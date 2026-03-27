@@ -19,4 +19,7 @@ GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET')
 
 # ngrok configuration
-NGROK_AUTH_TOKEN = os.getenv('NGROK_AUTH_TOKEN') 
+NGROK_AUTH_TOKEN = os.getenv('NGROK_AUTH_TOKEN')
+
+# Admin access — comma-separated list of Google email addresses with admin privileges
+ALLOWED_ADMIN_EMAILS = [e.strip() for e in os.getenv('ALLOWED_ADMIN_EMAILS', '').split(',') if e.strip()]
