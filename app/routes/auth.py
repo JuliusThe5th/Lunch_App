@@ -57,7 +57,10 @@ def verify_token():
                 return jsonify(error), status
 
         # Create JWT token
-        access_token = create_access_token(identity=full_name)
+        access_token = create_access_token(
+            identity=full_name,
+            additional_claims={'isAdmin': student.isAdmin}
+        )
 
         response = jsonify({
             'message': 'Authentication successful',
