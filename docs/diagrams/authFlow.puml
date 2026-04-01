@@ -1,11 +1,13 @@
 @startuml
-title Firebase Authentication - Google Sign-In (Popup Flow)
+title Firebase Authentication - Google Sign-In with Backend Integration
 
 actor User
 participant "Web App\n(Frontend)" as App
 participant "Firebase JS SDK" as FirebaseSDK
 participant "Google Auth Server" as Google
 participant "Firebase Auth Handler\n<project>.firebaseapp.com" as Handler
+participant "Flask Backend\n/verify-token" as Backend
+participant "SQLite Database" as DB
 
 User -> App: Click "Login with Google"
 App -> FirebaseSDK: firebase.auth().signInWithPopup(googleProvider)
@@ -22,5 +24,14 @@ FirebaseSDK -> Google: Exchange code for tokens\n(if required)
 Google --> FirebaseSDK: id_token, access_token, user info
 
 FirebaseSDK -> App: Return Firebase User object\n+ ID token
+App -> Backend: POST /verify-token\n(Firebase ID token)
+
+Backend -> Backend: firebase_auth.verify_id_token()
+Backend -> DB: Query/Create Student record\n(email, name, picture)
+DB --> Backend: Student data + isAdmin flag
+
+Backend -> Backend: create_access_token()\n(JWT with claims)
+Backend -> App: JWT token + user data\n(name, picture, is_admin)
+
 App -> User: Logged in successfully
 @enduml
